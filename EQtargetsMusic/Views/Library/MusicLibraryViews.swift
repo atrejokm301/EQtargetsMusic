@@ -227,13 +227,13 @@ struct MusicListView: View {
     private var emptyState: some View {
         VStack(spacing: 16) {
             Image(systemName: "music.note.list")
-                .font(.system(size: 48))
+                .font(.app(size: 48))
                 .foregroundStyle(theme.accent)
             Text("No tracks yet")
-                .font(.system(size: 20, weight: .bold, design: .rounded))
+                .font(.app(size: 20, weight: .bold, design: .rounded))
                 .foregroundStyle(theme.primaryText)
             Text("Import a whole folder of music, or pick individual files (MP3, M4A, FLAC, WAV…).")
-                .font(.system(size: 14, weight: .medium, design: .rounded))
+                .font(.app(size: 14, weight: .medium, design: .rounded))
                 .foregroundStyle(theme.secondaryText)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 32)
@@ -241,7 +241,7 @@ struct MusicListView: View {
                 showFileImporter = true
             } label: {
                 Label("Import Audio Files", systemImage: "square.and.arrow.down")
-                    .font(.system(size: 15, weight: .bold, design: .rounded))
+                    .font(.app(size: 15, weight: .bold, design: .rounded))
                     .padding(.horizontal, 20)
                     .padding(.vertical, 12)
             }
@@ -279,10 +279,10 @@ struct ArtistsListView: View {
                             .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                         VStack(alignment: .leading, spacing: 4) {
                             Text(artist.name)
-                                .font(.system(size: 16, weight: .semibold, design: .rounded))
+                                .font(.app(size: 16, weight: .semibold, design: .rounded))
                                 .foregroundStyle(theme.primaryText)
                             Text("\(artist.albumCount) album\(artist.albumCount == 1 ? "" : "s") · \(artist.tracks.count) track\(artist.tracks.count == 1 ? "" : "s")")
-                                .font(.system(size: 13, weight: .medium, design: .rounded))
+                                .font(.app(size: 13, weight: .medium, design: .rounded))
                                 .foregroundStyle(theme.secondaryText)
                         }
                     }
@@ -378,10 +378,10 @@ struct ArtistDetailView: View {
                             .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
                         VStack(alignment: .leading, spacing: 2) {
                             Text(album.name)
-                                .font(.system(size: 15, weight: .bold, design: .rounded))
+                                .font(.app(size: 15, weight: .bold, design: .rounded))
                                 .foregroundStyle(theme.primaryText)
                             Text("\(album.tracks.count) track\(album.tracks.count == 1 ? "" : "s")")
-                                .font(.system(size: 11, weight: .medium, design: .rounded))
+                                .font(.app(size: 11, weight: .medium, design: .rounded))
                                 .foregroundStyle(theme.tertiaryText)
                         }
                         Spacer()
@@ -389,7 +389,7 @@ struct ArtistDetailView: View {
                             library.deleteAlbum(album)
                         } label: {
                             Image(systemName: "trash")
-                                .font(.system(size: 12, weight: .semibold))
+                                .font(.app(size: 12, weight: .semibold))
                                 .foregroundStyle(theme.danger)
                         }
                     }
@@ -447,10 +447,10 @@ struct AlbumsListView: View {
                             .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                         VStack(alignment: .leading, spacing: 4) {
                             Text(album.name.isEmpty ? "Unknown Album" : album.name)
-                                .font(.system(size: 16, weight: .semibold, design: .rounded))
+                                .font(.app(size: 16, weight: .semibold, design: .rounded))
                                 .foregroundStyle(theme.primaryText)
                             Text("\(album.artist) · \(album.tracks.count) track\(album.tracks.count == 1 ? "" : "s")")
-                                .font(.system(size: 13, weight: .medium, design: .rounded))
+                                .font(.app(size: 13, weight: .medium, design: .rounded))
                                 .foregroundStyle(theme.secondaryText)
                         }
                     }
@@ -604,19 +604,19 @@ struct SearchView: View {
                 VStack(spacing: 12) {
                     Spacer()
                     Image(systemName: "magnifyingglass")
-                        .font(.system(size: 40, weight: .medium))
+                        .font(.app(size: 40, weight: .medium))
                         .foregroundStyle(theme.tertiaryText)
                     Text("Search your library")
-                        .font(.system(size: 18, weight: .bold, design: .rounded))
+                        .font(.app(size: 18, weight: .bold, design: .rounded))
                         .foregroundStyle(theme.primaryText)
                     Text("Find songs by title, artist, or album.")
-                        .font(.system(size: 14, weight: .medium, design: .rounded))
+                        .font(.app(size: 14, weight: .medium, design: .rounded))
                         .foregroundStyle(theme.secondaryText)
                         .multilineTextAlignment(.center)
                         .padding(.horizontal, 32)
                     if !library.tracks.isEmpty {
                         Text("\(library.tracks.count) tracks · \(library.knownBPMCount) BPM · \(library.missingBPMCount) missing")
-                            .font(.system(size: 12, weight: .semibold, design: .rounded))
+                            .font(.app(size: 12, weight: .semibold, design: .rounded))
                             .foregroundStyle(theme.tertiaryText)
                             .padding(.top, 4)
                     }
@@ -626,13 +626,13 @@ struct SearchView: View {
                 VStack(spacing: 12) {
                     Spacer()
                     Image(systemName: "music.note.list")
-                        .font(.system(size: 36, weight: .medium))
+                        .font(.app(size: 36, weight: .medium))
                         .foregroundStyle(theme.tertiaryText)
                     Text("No matches")
-                        .font(.system(size: 18, weight: .bold, design: .rounded))
+                        .font(.app(size: 18, weight: .bold, design: .rounded))
                         .foregroundStyle(theme.primaryText)
                     Text("Nothing matched “\(query.trimmingCharacters(in: .whitespacesAndNewlines))”.")
-                        .font(.system(size: 14, weight: .medium, design: .rounded))
+                        .font(.app(size: 14, weight: .medium, design: .rounded))
                         .foregroundStyle(theme.secondaryText)
                         .multilineTextAlignment(.center)
                         .padding(.horizontal, 32)
@@ -687,7 +687,7 @@ struct SearchView: View {
                         }
                     } header: {
                         Text("\(results.count) result\(results.count == 1 ? "" : "s")")
-                            .font(.system(size: 12, weight: .semibold, design: .rounded))
+                            .font(.app(size: 12, weight: .semibold, design: .rounded))
                             .foregroundStyle(theme.tertiaryText)
                             .textCase(nil)
                     }

@@ -161,20 +161,20 @@ struct ImmersivePlayerView: View {
 
                     VStack(spacing: 5) {
                         Text(player.currentTrack?.title ?? "Nothing Playing")
-                            .font(.system(size: 22, weight: .bold, design: .rounded))
+                            .font(.app(size: 22, weight: .bold, design: .rounded))
                             .foregroundStyle(.white)
                             .multilineTextAlignment(.center)
                             .lineLimit(2)
                             .minimumScaleFactor(0.82)
 
                         Text(player.currentTrack?.artist ?? "")
-                            .font(.system(size: 16, weight: .medium, design: .rounded))
+                            .font(.app(size: 16, weight: .medium, design: .rounded))
                             .foregroundStyle(.white.opacity(0.78))
                             .lineLimit(1)
 
                         if let album = player.currentTrack?.album, !album.isEmpty {
                             Text(album)
-                                .font(.system(size: 13, weight: .regular, design: .rounded))
+                                .font(.app(size: 13, weight: .regular, design: .rounded))
                                 .foregroundStyle(.white.opacity(0.48))
                                 .lineLimit(1)
                         }
@@ -288,7 +288,7 @@ struct ImmersivePlayerView: View {
         HStack(spacing: 0) {
             Button { player.cycleShuffleMode() } label: {
                 Image(systemName: player.shuffleMode.iconName)
-                    .font(.system(size: 17, weight: .semibold))
+                    .font(.app(size: 17, weight: .semibold))
                     .foregroundStyle(player.shuffleMode == .off ? .white.opacity(0.38) : theme.accent)
                     .symbolVariant(player.shuffleMode == .banger ? .fill : .none)
                     .frame(maxWidth: .infinity)
@@ -298,7 +298,7 @@ struct ImmersivePlayerView: View {
 
             Button { player.skipBackward() } label: {
                 Image(systemName: "backward.fill")
-                    .font(.system(size: 24, weight: .semibold))
+                    .font(.app(size: 24, weight: .semibold))
                     .frame(maxWidth: .infinity)
                     .frame(height: 48)
             }
@@ -306,7 +306,7 @@ struct ImmersivePlayerView: View {
 
             Button { player.togglePlayPause() } label: {
                 Image(systemName: player.isPlaying ? "pause.circle.fill" : "play.circle.fill")
-                    .font(.system(size: 64))
+                    .font(.app(size: 64))
                     .symbolRenderingMode(.hierarchical)
                     .foregroundStyle(theme.accent)
                     .frame(width: 76, height: 76)
@@ -316,7 +316,7 @@ struct ImmersivePlayerView: View {
 
             Button { player.skipForward() } label: {
                 Image(systemName: "forward.fill")
-                    .font(.system(size: 24, weight: .semibold))
+                    .font(.app(size: 24, weight: .semibold))
                     .frame(maxWidth: .infinity)
                     .frame(height: 48)
             }
@@ -324,7 +324,7 @@ struct ImmersivePlayerView: View {
 
             Button { player.cycleRepeatMode() } label: {
                 Image(systemName: player.repeatMode.iconName)
-                    .font(.system(size: 17, weight: .semibold))
+                    .font(.app(size: 17, weight: .semibold))
                     .foregroundStyle(player.repeatMode == .off ? .white.opacity(0.38) : theme.accent)
                     .frame(maxWidth: .infinity)
                     .frame(height: 48)
@@ -354,7 +354,7 @@ struct ImmersivePlayerView: View {
                 ZStack {
                     Color.white.opacity(0.08)
                     Image(systemName: "music.note")
-                        .font(.system(size: 44, weight: .medium))
+                        .font(.app(size: 44, weight: .medium))
                         .foregroundStyle(.white.opacity(0.35))
                 }
             }
@@ -567,7 +567,7 @@ struct ImmersivePlayerView: View {
                     collapseThen(nil)
                 } label: {
                     Image(systemName: "chevron.down")
-                        .font(.system(size: 16, weight: .bold))
+                        .font(.app(size: 16, weight: .bold))
                         .foregroundStyle(.white.opacity(0.9))
                         .frame(width: 44, height: 44)
                         .background {
@@ -585,7 +585,7 @@ struct ImmersivePlayerView: View {
 
                 if player.crossfade.isEnabled {
                     Text("Crossfade \(player.crossfade.durationSeconds)s")
-                        .font(.system(size: 11, weight: .semibold, design: .rounded))
+                        .font(.app(size: 11, weight: .semibold, design: .rounded))
                         .foregroundStyle(.white.opacity(0.55))
                         .padding(.horizontal, 10)
                         .padding(.vertical, 6)
@@ -701,7 +701,7 @@ struct ImmersivePlayerView: View {
     ) -> some View {
         Button(action: action) {
             Label(title, systemImage: systemImage)
-                .font(.system(size: 14, weight: .bold, design: .rounded))
+                .font(.app(size: 14, weight: .bold, design: .rounded))
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 13)
                 .foregroundStyle(.white)

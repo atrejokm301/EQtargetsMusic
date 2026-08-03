@@ -57,10 +57,10 @@ struct EQControlsView: View {
                     } label: {
                         HStack(spacing: 4) {
                             Text(presetStore.selectedTargetName)
-                                .font(.system(size: 12, weight: .bold, design: .rounded))
+                                .font(.app(size: 12, weight: .bold, design: .rounded))
                                 .lineLimit(1)
                             Image(systemName: "chevron.down")
-                                .font(.system(size: 10, weight: .bold))
+                                .font(.app(size: 10, weight: .bold))
                         }
                         .foregroundStyle(theme.targetTint)
                         .padding(.horizontal, 10)
@@ -72,7 +72,7 @@ struct EQControlsView: View {
 
                     Button(action: onImportAutoEQ) {
                         Image(systemName: "doc.badge.plus")
-                            .font(.system(size: 12, weight: .semibold))
+                            .font(.app(size: 12, weight: .semibold))
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
@@ -83,7 +83,7 @@ struct EQControlsView: View {
                         showSaveTargetAlert = true
                     } label: {
                         Label("Save", systemImage: "bookmark.fill")
-                            .font(.system(size: 11, weight: .bold, design: .rounded))
+                            .font(.app(size: 11, weight: .bold, design: .rounded))
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
@@ -118,10 +118,10 @@ struct EQControlsView: View {
                     } label: {
                         HStack(spacing: 4) {
                             Text(presetStore.selectedFineTuneName)
-                                .font(.system(size: 12, weight: .bold, design: .rounded))
+                                .font(.app(size: 12, weight: .bold, design: .rounded))
                                 .lineLimit(1)
                             Image(systemName: "chevron.down")
-                                .font(.system(size: 10, weight: .bold))
+                                .font(.app(size: 10, weight: .bold))
                         }
                         .foregroundStyle(theme.fineTint)
                         .padding(.horizontal, 10)
@@ -136,7 +136,7 @@ struct EQControlsView: View {
                         showSaveFineTuneAlert = true
                     } label: {
                         Label("Save", systemImage: "bookmark.fill")
-                            .font(.system(size: 11, weight: .bold, design: .rounded))
+                            .font(.app(size: 11, weight: .bold, design: .rounded))
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
@@ -152,18 +152,18 @@ struct EQControlsView: View {
             liquidGlassSegmentedSwitch
 
             Text(dual.editingLayer.subtitle)
-                .font(.system(size: 11, weight: .medium, design: .rounded))
+                .font(.app(size: 11, weight: .medium, design: .rounded))
                 .foregroundStyle(theme.tertiaryText)
 
             // Preamp −20…+20
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
                     Text("\(dual.editingLayer.title) Preamp")
-                        .font(.system(size: 13, weight: .semibold, design: .rounded))
+                        .font(.app(size: 13, weight: .semibold, design: .rounded))
                         .foregroundStyle(theme.primaryText)
                     Spacer()
                     Text(String(format: "%+.1f dB", dual.activeLayer.preamp))
-                        .font(.system(size: 13, weight: .bold, design: .monospaced))
+                        .font(.app(size: 13, weight: .bold, design: .monospaced))
                         .foregroundStyle(theme.accent)
                 }
                 Slider(
@@ -184,7 +184,7 @@ struct EQControlsView: View {
 
             // 10 bands horizontal scroll
             Text("10 parametric bands · F / Gain / Q")
-                .font(.system(size: 12, weight: .semibold, design: .rounded))
+                .font(.app(size: 12, weight: .semibold, design: .rounded))
                 .foregroundStyle(theme.secondaryText)
 
             ScrollView(.horizontal, showsIndicators: false) {
@@ -215,7 +215,7 @@ struct EQControlsView: View {
 
                 Spacer()
             }
-            .font(.system(size: 12, weight: .semibold, design: .rounded))
+            .font(.app(size: 12, weight: .semibold, design: .rounded))
         }
         .alert("Save Target Curve", isPresented: $showSaveTargetAlert) {
             TextField("Target Curve Name", text: $newTargetName)
@@ -278,10 +278,10 @@ struct EQControlsView: View {
         } label: {
             VStack(spacing: 2) {
                 Text(title)
-                    .font(.system(size: 13, weight: .bold, design: .rounded))
+                    .font(.app(size: 13, weight: .bold, design: .rounded))
                     .foregroundStyle(isSelected ? tint : theme.secondaryText)
                 Text(subtitle)
-                    .font(.system(size: 10, weight: .semibold, design: .rounded))
+                    .font(.app(size: 10, weight: .semibold, design: .rounded))
                     .foregroundStyle(isSelected ? tint.opacity(0.85) : theme.tertiaryText)
             }
             .frame(maxWidth: .infinity)
@@ -313,7 +313,7 @@ struct EQControlsView: View {
         return VStack(spacing: 8) {
             HStack {
                 Text("B\(index + 1)")
-                    .font(.system(size: 11, weight: .bold, design: .rounded))
+                    .font(.app(size: 11, weight: .bold, design: .rounded))
                     .foregroundStyle(theme.accent)
                 Spacer()
                 Toggle(
@@ -328,7 +328,7 @@ struct EQControlsView: View {
             }
 
             Text(String(format: "%+.1f dB", band.gain))
-                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                .font(.app(size: 11, weight: .semibold, design: .monospaced))
                 .foregroundStyle(
                     abs(band.gain) < 0.05
                         ? theme.secondaryText
@@ -364,10 +364,10 @@ struct EQControlsView: View {
             )
 
             Text(freqLabel(band.frequency))
-                .font(.system(size: 10, design: .monospaced))
+                .font(.app(size: 10, design: .monospaced))
                 .foregroundStyle(theme.tertiaryText)
             Text(String(format: "Q %.2f", band.q))
-                .font(.system(size: 10, design: .monospaced))
+                .font(.app(size: 10, design: .monospaced))
                 .foregroundStyle(theme.tertiaryText)
         }
         .padding(10)
@@ -379,7 +379,7 @@ struct EQControlsView: View {
     private func labeledSlider(_ title: String, value: Binding<Double>, range: ClosedRange<Double>) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(title)
-                .font(.system(size: 9, weight: .semibold))
+                .font(.app(size: 9, weight: .semibold))
                 .foregroundStyle(theme.tertiaryText)
             Slider(value: value, in: range)
                 .controlSize(.mini)
@@ -390,7 +390,7 @@ struct EQControlsView: View {
     private func labeledLogSlider(_ title: String, value: Binding<Double>, range: ClosedRange<Double>) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(title)
-                .font(.system(size: 9, weight: .semibold))
+                .font(.app(size: 9, weight: .semibold))
                 .foregroundStyle(theme.tertiaryText)
             Slider(
                 value: Binding(
@@ -408,7 +408,7 @@ struct EQControlsView: View {
         HStack(spacing: 4) {
             Capsule().fill(color).frame(width: 12, height: 3)
             Text(title)
-                .font(.system(size: 10, weight: .semibold, design: .rounded))
+                .font(.app(size: 10, weight: .semibold, design: .rounded))
                 .foregroundStyle(theme.secondaryText)
         }
     }

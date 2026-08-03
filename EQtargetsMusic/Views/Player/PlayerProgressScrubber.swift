@@ -46,7 +46,7 @@ struct PlayerProgressScrubber: View {
                 Spacer()
                 Text(formatTime(max(0, player.duration - (isScrubbing ? scrubTime : displayTime))))
             }
-            .font(.system(size: 11, weight: .medium, design: .monospaced))
+            .font(.app(size: 11, weight: .medium, design: .monospaced))
             .foregroundStyle(.white.opacity(0.6))
         }
         .onAppear { displayTime = player.currentTime }

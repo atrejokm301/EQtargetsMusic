@@ -47,11 +47,11 @@ struct MiniPlayerBar: View {
 
                     VStack(alignment: .leading, spacing: 2) {
                         Text(player.currentTrack?.title ?? "Nothing Playing")
-                            .font(.system(size: 15, weight: .semibold, design: .rounded))
+                            .font(.app(size: 15, weight: .semibold, design: .rounded))
                             .foregroundStyle(theme.primaryText)
                             .lineLimit(1)
                         Text(subtitle)
-                            .font(.system(size: 12, weight: .medium, design: .rounded))
+                            .font(.app(size: 12, weight: .medium, design: .rounded))
                             .foregroundStyle(theme.secondaryText)
                             .lineLimit(1)
                     }
@@ -69,7 +69,7 @@ struct MiniPlayerBar: View {
                 player.togglePlayPause()
             } label: {
                 Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
-                    .font(.system(size: 16, weight: .bold))
+                    .font(.app(size: 16, weight: .bold))
                     .foregroundStyle(theme.accent)
                     .frame(width: 40, height: 40)
                     .background {
@@ -84,7 +84,7 @@ struct MiniPlayerBar: View {
                 player.skipForward()
             } label: {
                 Image(systemName: "forward.fill")
-                    .font(.system(size: 14, weight: .bold))
+                    .font(.app(size: 14, weight: .bold))
                     .foregroundStyle(theme.primaryText)
                     .frame(width: 40, height: 40)
                     .background {
@@ -182,7 +182,7 @@ struct MiniPlayerBar: View {
             ZStack {
                 theme.elevated
                 Image(systemName: "music.note")
-                    .font(.system(size: 15, weight: .medium))
+                    .font(.app(size: 15, weight: .medium))
                     .foregroundStyle(theme.tertiaryText)
             }
         }

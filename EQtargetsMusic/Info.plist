@@ -57,5 +57,9 @@
 	<true/>
 	<key>NSAppleMusicUsageDescription</key>
 	<string>EQtargets Music plays and equalizes audio files you import into the app.</string>
+	<key>UIAppFonts</key>
+	<array>
+		<string>GoogleSansFlex.ttf</string>
+	</array>
 </dict>
 </plist>

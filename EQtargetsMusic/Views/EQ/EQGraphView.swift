@@ -94,7 +94,7 @@ struct EQGraphView: View {
                     let t = (g - yRange.lowerBound) / (yRange.upperBound - yRange.lowerBound)
                     let y = plot.maxY - t * plot.height
                     Text(g > 0 ? "+\(Int(g))" : "\(Int(g))")
-                        .font(.system(size: 9, weight: .medium, design: .rounded))
+                        .font(.app(size: 9, weight: .medium, design: .rounded))
                         .foregroundStyle(theme.tertiaryText)
                         .position(x: 16, y: y)
                 }

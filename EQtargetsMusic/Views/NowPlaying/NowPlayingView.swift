@@ -34,15 +34,15 @@ struct NowPlayingView: View {
 
                     VStack(alignment: .leading, spacing: 6) {
                         Text(player.currentTrack?.title ?? "Nothing Playing")
-                            .font(.system(size: 22, weight: .bold, design: .rounded))
+                            .font(.app(size: 22, weight: .bold, design: .rounded))
                             .foregroundStyle(theme.primaryText)
                             .lineLimit(2)
                         Text(player.currentTrack?.artist ?? "Select a track from Music")
-                            .font(.system(size: 15, weight: .medium, design: .rounded))
+                            .font(.app(size: 15, weight: .medium, design: .rounded))
                             .foregroundStyle(theme.secondaryText)
                             .lineLimit(1)
                         Text(player.currentTrack?.album ?? "")
-                            .font(.system(size: 13, weight: .regular, design: .rounded))
+                            .font(.app(size: 13, weight: .regular, design: .rounded))
                             .foregroundStyle(theme.tertiaryText)
                             .lineLimit(1)
                     }
@@ -100,7 +100,7 @@ struct NowPlayingView: View {
                             Spacer()
                             Text(formatTime(player.duration))
                         }
-                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                        .font(.app(size: 11, weight: .medium, design: .monospaced))
                         .foregroundStyle(theme.tertiaryText)
                         .transaction { $0.animation = nil }
                     }
@@ -111,7 +111,7 @@ struct NowPlayingView: View {
                             player.cycleShuffleMode()
                         } label: {
                             Image(systemName: player.shuffleMode.iconName)
-                                .font(.system(size: 20, weight: .semibold))
+                                .font(.app(size: 20, weight: .semibold))
                                 .foregroundStyle(player.shuffleMode == .off ? theme.tertiaryText : theme.accent)
                                 .symbolVariant(player.shuffleMode == .banger ? .fill : .none)
                         }
@@ -120,13 +120,13 @@ struct NowPlayingView: View {
 
                         Button { player.skipBackward() } label: {
                             Image(systemName: "backward.fill")
-                                .font(.system(size: 24))
+                                .font(.app(size: 24))
                         }
                         .frame(minWidth: 44, minHeight: 44)
 
                         Button { player.togglePlayPause() } label: {
                             Image(systemName: player.isPlaying ? "pause.circle.fill" : "play.circle.fill")
-                                .font(.system(size: 60))
+                                .font(.app(size: 60))
                                 .symbolRenderingMode(.hierarchical)
                                 .foregroundStyle(theme.accent)
                         }
@@ -134,7 +134,7 @@ struct NowPlayingView: View {
 
                         Button { player.skipForward() } label: {
                             Image(systemName: "forward.fill")
-                                .font(.system(size: 24))
+                                .font(.app(size: 24))
                         }
                         .frame(minWidth: 44, minHeight: 44)
 
@@ -143,7 +143,7 @@ struct NowPlayingView: View {
                             player.cycleRepeatMode()
                         } label: {
                             Image(systemName: player.repeatMode.iconName)
-                                .font(.system(size: 20, weight: .semibold))
+                                .font(.app(size: 20, weight: .semibold))
                                 .foregroundStyle(player.repeatMode == .off ? theme.tertiaryText : theme.accent)
                                 .opacity(player.repeatMode == .off ? 0.55 : 1)
                         }
@@ -186,7 +186,7 @@ struct NowPlayingView: View {
                     showAutoMixSheet = true
                 } label: {
                     Image(systemName: "shuffle.circle")
-                        .font(.system(size: 16, weight: .bold))
+                        .font(.app(size: 16, weight: .bold))
                         .foregroundStyle(player.crossfade.isEnabled ? theme.accent : theme.secondaryText)
                         .accessibilityLabel("Crossfade settings")
                 }
@@ -220,12 +220,12 @@ struct NowPlayingView: View {
                 Image(systemName: "info.circle.fill")
                     .foregroundStyle(theme.accent)
                 Text("EQ applies to in-app playback only (not system-wide)")
-                    .font(.system(size: 12, weight: .medium, design: .rounded))
+                    .font(.app(size: 12, weight: .medium, design: .rounded))
                     .foregroundStyle(theme.secondaryText)
                     .multilineTextAlignment(.leading)
                 Spacer()
                 Image(systemName: "chevron.right")
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(.app(size: 11, weight: .semibold))
                     .foregroundStyle(theme.tertiaryText)
             }
             .padding(12)
@@ -248,7 +248,7 @@ struct NowPlayingView: View {
                     endPoint: .bottomTrailing
                 )
                 Image(systemName: "music.note")
-                    .font(.system(size: 36, weight: .medium))
+                    .font(.app(size: 36, weight: .medium))
                     .foregroundStyle(.white.opacity(0.9))
             }
         }
@@ -299,11 +299,11 @@ struct AutoMixSettingsSheet: View {
                 VStack(alignment: .leading, spacing: 20) {
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Crossfade")
-                            .font(.system(size: 18, weight: .bold, design: .rounded))
+                            .font(.app(size: 18, weight: .bold, design: .rounded))
                             .foregroundStyle(theme.primaryText)
                             .accessibilityAddTraits(.isHeader)
                         Text("Plays the end of the current song and the start of the next song at the same time, blending volumes. Works on Next and when a song ends on its own. Not beat-matched DJ AutoMix (no tempo warp).")
-                            .font(.system(size: 14, weight: .medium, design: .rounded))
+                            .font(.app(size: 14, weight: .medium, design: .rounded))
                             .foregroundStyle(theme.secondaryText)
                             .fixedSize(horizontal: false, vertical: true)
                     }
@@ -313,10 +313,10 @@ struct AutoMixSettingsSheet: View {
 
                     VStack(alignment: .leading, spacing: 12) {
                         Text("Duration")
-                            .font(.system(size: 14, weight: .semibold, design: .rounded))
+                            .font(.app(size: 14, weight: .semibold, design: .rounded))
                             .foregroundStyle(theme.primaryText)
                         Text("How long both songs overlap. Off = hard cut. On long tracks, 15–30s+ is honored (up to ~75% of the current song). Short tracks still auto-cap so the song isn’t only fade.")
-                            .font(.system(size: 12, weight: .medium, design: .rounded))
+                            .font(.app(size: 12, weight: .medium, design: .rounded))
                             .foregroundStyle(theme.secondaryText)
                             .fixedSize(horizontal: false, vertical: true)
 
@@ -331,7 +331,7 @@ struct AutoMixSettingsSheet: View {
                                     player.crossfade = player.crossfade.withDurationSeconds(seconds)
                                 } label: {
                                     Text(seconds == 0 ? "Off" : "\(seconds)s")
-                                        .font(.system(size: 14, weight: .bold, design: .rounded))
+                                        .font(.app(size: 14, weight: .bold, design: .rounded))
                                         .frame(maxWidth: .infinity)
                                         .padding(.vertical, 10)
                                         .foregroundStyle(selected ? Color.white : theme.primaryText)
@@ -352,10 +352,10 @@ struct AutoMixSettingsSheet: View {
                     // Curve + adaptive (volume crossfade only — not beat-match)
                     VStack(alignment: .leading, spacing: 12) {
                         Text("Blend curve")
-                            .font(.system(size: 14, weight: .semibold, design: .rounded))
+                            .font(.app(size: 14, weight: .semibold, design: .rounded))
                             .foregroundStyle(theme.primaryText)
                         Text("Shape of the volume swap while both tracks play.")
-                            .font(.system(size: 12, weight: .medium, design: .rounded))
+                            .font(.app(size: 12, weight: .medium, design: .rounded))
                             .foregroundStyle(theme.secondaryText)
 
                         HStack(spacing: 8) {
@@ -367,7 +367,7 @@ struct AutoMixSettingsSheet: View {
                                     player.crossfade = s
                                 } label: {
                                     Text(curve.title)
-                                        .font(.system(size: 13, weight: .bold, design: .rounded))
+                                        .font(.app(size: 13, weight: .bold, design: .rounded))
                                         .frame(maxWidth: .infinity)
                                         .padding(.vertical, 10)
                                         .foregroundStyle(selected ? Color.white : theme.primaryText)
@@ -398,10 +398,10 @@ struct AutoMixSettingsSheet: View {
                         )) {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text("Smart tempo blend")
-                                    .font(.system(size: 14, weight: .semibold, design: .rounded))
+                                    .font(.app(size: 14, weight: .semibold, design: .rounded))
                                     .foregroundStyle(theme.primaryText)
                                 Text("Shortens the blend when energy clashes (e.g. Adoración → Júbilo) or felt BPMs are far apart. Uses tempo lanes, not half/double tricks. Off = always use the Duration you set (still track-length capped).")
-                                    .font(.system(size: 12, weight: .medium, design: .rounded))
+                                    .font(.app(size: 12, weight: .medium, design: .rounded))
                                     .foregroundStyle(theme.secondaryText)
                                     .fixedSize(horizontal: false, vertical: true)
                             }
@@ -418,10 +418,10 @@ struct AutoMixSettingsSheet: View {
                         )) {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text("Skip silence (alabanzas / live)")
-                                    .font(.system(size: 14, weight: .semibold, design: .rounded))
+                                    .font(.app(size: 14, weight: .semibold, design: .rounded))
                                     .foregroundStyle(theme.primaryText)
                                 Text("v2: adaptive noise floor finds where music really starts/ends. Skips long intros (talking, room tone) and trims trailing applause only when there’s real quiet at the end — ideal for live worship. Crossfade arms on the trimmed end.")
-                                    .font(.system(size: 12, weight: .medium, design: .rounded))
+                                    .font(.app(size: 12, weight: .medium, design: .rounded))
                                     .foregroundStyle(theme.secondaryText)
                                     .fixedSize(horizontal: false, vertical: true)
                             }
@@ -435,7 +435,7 @@ struct AutoMixSettingsSheet: View {
                     SmartBPMShuffleSettingsCard()
 
                     Text("Two independent EQ decks keep Target + Fine-Tune correct while songs overlap. No time-stretch — both tracks play at real speed. Caps: ~75% of current playable length, ~70% of next, and never longer than time left if you skip late.")
-                        .font(.system(size: 12, weight: .medium, design: .rounded))
+                        .font(.app(size: 12, weight: .medium, design: .rounded))
                         .foregroundStyle(theme.tertiaryText)
                         .fixedSize(horizontal: false, vertical: true)
                         .padding(.horizontal, 4)
@@ -448,7 +448,7 @@ struct AutoMixSettingsSheet: View {
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Done") { dismiss() }
-                        .font(.system(size: 15, weight: .bold, design: .rounded))
+                        .font(.app(size: 15, weight: .bold, design: .rounded))
                         .accessibilityLabel("Done")
                 }
             }
@@ -458,10 +458,10 @@ struct AutoMixSettingsSheet: View {
     private func curveHelpRow(title: String, body: String) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(title)
-                .font(.system(size: 12, weight: .bold, design: .rounded))
+                .font(.app(size: 12, weight: .bold, design: .rounded))
                 .foregroundStyle(theme.primaryText)
             Text(body)
-                .font(.system(size: 11, weight: .medium, design: .rounded))
+                .font(.app(size: 11, weight: .medium, design: .rounded))
                 .foregroundStyle(theme.tertiaryText)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -476,16 +476,16 @@ private struct SmartBPMShuffleSettingsCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Smart Tempo Up Next")
-                .font(.system(size: 14, weight: .semibold, design: .rounded))
+                .font(.app(size: 14, weight: .semibold, design: .rounded))
                 .foregroundStyle(theme.primaryText)
 
             Toggle(isOn: $smartBPMShuffleEnabled) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Keep the same worship energy")
-                        .font(.system(size: 14, weight: .semibold, design: .rounded))
+                        .font(.app(size: 14, weight: .semibold, design: .rounded))
                         .foregroundStyle(theme.primaryText)
                     Text("When Up Next is empty, picks one library track in the same tempo lane: Adoración (slow), Mid, or Júbilo (upbeat praise). Uses felt BPM — not half/double matching — so slow worship doesn’t jump into fast alabanza. Manual queue always wins.")
-                        .font(.system(size: 12, weight: .medium, design: .rounded))
+                        .font(.app(size: 12, weight: .medium, design: .rounded))
                         .foregroundStyle(theme.secondaryText)
                         .fixedSize(horizontal: false, vertical: true)
                 }

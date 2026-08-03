@@ -9,30 +9,45 @@ struct TrackRowView: View {
     let track: Track
     var isPlaying: Bool = false
     var trackIndex: Int? = nil
+    /// Brighter labels for dark glass surfaces (queue sheet).
+    var highContrast: Bool = false
 
     @Environment(\.grokTheme) private var theme
+
+    private var titleColor: Color {
+        if isPlaying { return theme.accent }
+        return highContrast ? Color.white.opacity(0.96) : theme.primaryText
+    }
+
+    private var subtitleColor: Color {
+        highContrast ? Color.white.opacity(0.72) : theme.secondaryText
+    }
+
+    private var metaColor: Color {
+        highContrast ? Color.white.opacity(0.55) : theme.tertiaryText
+    }
 
     var body: some View {
         HStack(spacing: 12) {
             if let trackIndex {
                 Text("\(trackIndex)")
-                    .font(.system(size: 14, weight: .bold, design: .monospaced))
-                    .foregroundStyle(isPlaying ? theme.accent : theme.tertiaryText)
+                    .font(.app(size: 14, weight: .bold, design: .monospaced))
+                    .foregroundStyle(isPlaying ? theme.accent : metaColor)
                     .frame(width: 24, alignment: .center)
             }
 
             artwork
                 .frame(width: 52, height: 52)
-                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(track.title)
-                    .font(.system(size: 16, weight: .semibold, design: .rounded))
-                    .foregroundStyle(isPlaying ? theme.accent : theme.primaryText)
+                    .font(.app(size: 16, weight: .semibold))
+                    .foregroundStyle(titleColor)
                     .lineLimit(1)
                 Text("\(track.artist) · \(track.album)")
-                    .font(.system(size: 13, weight: .medium, design: .rounded))
-                    .foregroundStyle(theme.secondaryText)
+                    .font(.app(size: 13, weight: .medium))
+                    .foregroundStyle(subtitleColor)
                     .lineLimit(1)
             }
 
@@ -40,22 +55,21 @@ struct TrackRowView: View {
 
             if track.hasBPM, let bpm = track.bpm {
                 Text(String(format: "%.0f", bpm))
-                    .font(.system(size: 10, weight: .bold, design: .rounded))
+                    .font(.app(size: 10, weight: .bold))
                     .foregroundStyle(theme.accent)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 3)
-                    .background(Capsule().fill(theme.accent.opacity(0.14)))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Capsule(style: .continuous).fill(theme.accent.opacity(highContrast ? 0.22 : 0.14)))
                     .accessibilityLabel(String(format: "%.0f BPM", bpm))
             }
 
             if track.duration > 0 {
                 Text(formatDuration(track.duration))
-                    .font(.system(size: 12, weight: .medium, design: .monospaced))
-                    .foregroundStyle(theme.tertiaryText)
+                    .font(.app(size: 12, weight: .medium, design: .monospaced))
+                    .foregroundStyle(metaColor)
             }
 
             if isPlaying {
-                // Static icon — continuous symbolEffect was burning scroll frames.
                 Image(systemName: "waveform")
                     .foregroundStyle(theme.accent)
             }
@@ -74,9 +88,9 @@ struct TrackRowView: View {
                 .scaledToFill()
         } else {
             ZStack {
-                theme.elevated
+                (highContrast ? Color.white.opacity(0.10) : theme.elevated)
                 Image(systemName: "music.note")
-                    .foregroundStyle(theme.tertiaryText)
+                    .foregroundStyle(metaColor)
             }
         }
     }

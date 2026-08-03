@@ -317,7 +317,7 @@ struct RootTabView: View {
         .overlay(alignment: .top) {
             if let toast = player.toast {
                 Text(toast)
-                    .font(.system(size: 13, weight: .semibold, design: .rounded))
+                    .font(.app(size: 13, weight: .semibold, design: .rounded))
                     .foregroundStyle(theme.primaryText)
                     .padding(.horizontal, 16)
                     .padding(.vertical, 10)
@@ -474,7 +474,7 @@ struct RootTabView: View {
                 showHamburgerSheet = true
             } label: {
                 Image(systemName: "line.3.horizontal")
-                    .font(.system(size: 18, weight: .bold))
+                    .font(.app(size: 18, weight: .bold))
                     .foregroundStyle(theme.accent)
             }
         }
@@ -519,7 +519,7 @@ struct HamburgerMenuSheet: View {
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Done") { dismiss() }
-                        .font(.system(size: 15, weight: .bold, design: .rounded))
+                        .font(.app(size: 15, weight: .bold, design: .rounded))
                 }
             }
         }
@@ -537,10 +537,10 @@ struct HamburgerMenuSheet: View {
             }
             HStack(spacing: 8) {
                 Image(systemName: "metronome.fill")
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(.app(size: 12, weight: .semibold))
                     .foregroundStyle(theme.accent)
                 Text("\(library.knownBPMCount) with BPM · \(library.missingBPMCount) missing · \(library.uncheckedBPMCount) pending")
-                    .font(.system(size: 12, weight: .medium, design: .rounded))
+                    .font(.app(size: 12, weight: .medium, design: .rounded))
                     .foregroundStyle(theme.secondaryText)
                 Spacer(minLength: 0)
             }
@@ -550,7 +550,7 @@ struct HamburgerMenuSheet: View {
                         Task { await library.analyzeMissingBPMs() }
                     } label: {
                         Text(library.isAnalyzingBPM ? "Working…" : "Analyze")
-                            .font(.system(size: 12, weight: .bold, design: .rounded))
+                            .font(.app(size: 12, weight: .bold, design: .rounded))
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
@@ -562,7 +562,7 @@ struct HamburgerMenuSheet: View {
                             Task { await library.forceRedetectMissingBPMValues() }
                         } label: {
                             Text("Re-scan all missing")
-                                .font(.system(size: 12, weight: .bold, design: .rounded))
+                                .font(.app(size: 12, weight: .bold, design: .rounded))
                         }
                         .buttonStyle(.borderedProminent)
                         .controlSize(.small)
@@ -573,7 +573,7 @@ struct HamburgerMenuSheet: View {
             }
             if library.isAnalyzingBPM {
                 ProgressView(library.statusMessage.isEmpty ? "Analyzing BPM…" : library.statusMessage)
-                    .font(.system(size: 12, weight: .medium, design: .rounded))
+                    .font(.app(size: 12, weight: .medium, design: .rounded))
             }
         }
         .padding(14)
@@ -587,7 +587,7 @@ struct HamburgerMenuSheet: View {
                 Spacer()
                 if let label = player.sleepTimerRemainingLabel {
                     Text(label)
-                        .font(.system(size: 14, weight: .bold, design: .monospaced))
+                        .font(.app(size: 14, weight: .bold, design: .monospaced))
                         .foregroundStyle(theme.accent)
                         .padding(.horizontal, 10)
                         .padding(.vertical, 4)
@@ -595,7 +595,7 @@ struct HamburgerMenuSheet: View {
                 }
             }
             Text("Pauses playback when the timer ends. Great for falling asleep.")
-                .font(.system(size: 12, weight: .medium, design: .rounded))
+                .font(.app(size: 12, weight: .medium, design: .rounded))
                 .foregroundStyle(theme.secondaryText)
 
             LazyVGrid(
@@ -611,7 +611,7 @@ struct HamburgerMenuSheet: View {
                         player.setSleepTimer(minutes: minutes == 0 ? nil : minutes)
                     } label: {
                         Text(minutes == 0 ? "Off" : (minutes >= 60 ? "\(minutes / 60)h" : "\(minutes)m"))
-                            .font(.system(size: 13, weight: .bold, design: .rounded))
+                            .font(.app(size: 13, weight: .bold, design: .rounded))
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 10)
                             .foregroundStyle(selected ? Color.white : theme.primaryText)
@@ -653,10 +653,10 @@ struct HamburgerMenuSheet: View {
             Toggle(isOn: $smartBPMShuffleEnabled) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Smart Tempo Up Next")
-                        .font(.system(size: 14, weight: .semibold, design: .rounded))
+                        .font(.app(size: 14, weight: .semibold, design: .rounded))
                         .foregroundStyle(theme.primaryText)
                     Text("Keeps Adoración vs Júbilo separate. When Up Next is empty, auto-picks same tempo lane (slow / mid / upbeat). Manual queue always wins.")
-                        .font(.system(size: 12, weight: .medium, design: .rounded))
+                        .font(.app(size: 12, weight: .medium, design: .rounded))
                         .foregroundStyle(theme.secondaryText)
                 }
             }
@@ -679,19 +679,19 @@ struct HamburgerMenuSheet: View {
             } label: {
                 HStack(spacing: 12) {
                     Image(systemName: "shuffle.circle.fill")
-                        .font(.system(size: 22, weight: .semibold))
+                        .font(.app(size: 22, weight: .semibold))
                         .foregroundStyle(player.crossfade.isEnabled ? theme.accent : theme.secondaryText)
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Crossfade settings")
-                            .font(.system(size: 15, weight: .semibold, design: .rounded))
+                            .font(.app(size: 15, weight: .semibold, design: .rounded))
                             .foregroundStyle(theme.primaryText)
                         Text(crossfadeSubtitle)
-                            .font(.system(size: 12, weight: .medium, design: .rounded))
+                            .font(.app(size: 12, weight: .medium, design: .rounded))
                             .foregroundStyle(theme.secondaryText)
                     }
                     Spacer()
                     Image(systemName: "chevron.right")
-                        .font(.system(size: 12, weight: .semibold))
+                        .font(.app(size: 12, weight: .semibold))
                         .foregroundStyle(theme.tertiaryText)
                 }
                 .padding(12)
@@ -722,7 +722,7 @@ struct HamburgerMenuSheet: View {
                                 .fill(item.color(for: theme.isDark))
                                 .frame(width: 10, height: 10)
                             Text(item.title)
-                                .font(.system(size: 13, weight: .semibold, design: .rounded))
+                                .font(.app(size: 13, weight: .semibold, design: .rounded))
                                 .lineLimit(1)
                         }
                         .frame(maxWidth: .infinity)
@@ -775,7 +775,7 @@ struct HamburgerMenuSheet: View {
             Image(systemName: icon)
                 .foregroundStyle(theme.accent)
             Text(title)
-                .font(.system(size: 16, weight: .bold, design: .rounded))
+                .font(.app(size: 16, weight: .bold, design: .rounded))
                 .foregroundStyle(theme.primaryText)
         }
     }
@@ -783,10 +783,10 @@ struct HamburgerMenuSheet: View {
     private func statPill(value: String, label: String) -> some View {
         VStack(spacing: 2) {
             Text(value)
-                .font(.system(size: 18, weight: .bold, design: .rounded))
+                .font(.app(size: 18, weight: .bold, design: .rounded))
                 .foregroundStyle(theme.primaryText)
             Text(label)
-                .font(.system(size: 11, weight: .medium, design: .rounded))
+                .font(.app(size: 11, weight: .medium, design: .rounded))
                 .foregroundStyle(theme.secondaryText)
         }
         .frame(maxWidth: .infinity)
@@ -801,9 +801,9 @@ struct HamburgerMenuSheet: View {
         Button(action: action) {
             HStack(spacing: 8) {
                 Image(systemName: icon)
-                    .font(.system(size: 14, weight: .bold))
+                    .font(.app(size: 14, weight: .bold))
                 Text(title)
-                    .font(.system(size: 13, weight: .bold, design: .rounded))
+                    .font(.app(size: 13, weight: .bold, design: .rounded))
                     .lineLimit(1)
             }
             .frame(maxWidth: .infinity)
@@ -833,7 +833,7 @@ struct TempoLaneThresholdsEditor: View {
                 Image(systemName: "slider.horizontal.3")
                     .foregroundStyle(theme.accent)
                 Text("Tempo lane cutoffs")
-                    .font(.system(size: 14, weight: .bold, design: .rounded))
+                    .font(.app(size: 14, weight: .bold, design: .rounded))
                     .foregroundStyle(theme.primaryText)
                 Spacer(minLength: 0)
                 Button("Reset") {
@@ -841,18 +841,18 @@ struct TempoLaneThresholdsEditor: View {
                     reload()
                     UIImpactFeedbackGenerator(style: .light).impactOccurred()
                 }
-                .font(.system(size: 12, weight: .bold, design: .rounded))
+                .font(.app(size: 12, weight: .bold, design: .rounded))
                 .foregroundStyle(theme.accent)
             }
 
             Text("If a mid song feels like slow worship or like júbilo, drag these lines. Smart Tempo + crossfade use the same cutoffs.")
-                .font(.system(size: 12, weight: .medium, design: .rounded))
+                .font(.app(size: 12, weight: .medium, design: .rounded))
                 .foregroundStyle(theme.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
 
             // Live band map
             Text(TempoFeel.thresholdsSummary)
-                .font(.system(size: 12, weight: .bold, design: .rounded))
+                .font(.app(size: 12, weight: .bold, design: .rounded))
                 .foregroundStyle(theme.accent)
                 .padding(.vertical, 8)
                 .padding(.horizontal, 10)
@@ -865,11 +865,11 @@ struct TempoLaneThresholdsEditor: View {
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
                     Text("Adoración ends below")
-                        .font(.system(size: 13, weight: .semibold, design: .rounded))
+                        .font(.app(size: 13, weight: .semibold, design: .rounded))
                         .foregroundStyle(theme.primaryText)
                     Spacer()
                     Text("\(Int(adoracionMax.rounded())) BPM")
-                        .font(.system(size: 13, weight: .bold, design: .monospaced))
+                        .font(.app(size: 13, weight: .bold, design: .monospaced))
                         .foregroundStyle(theme.accent)
                 }
                 Slider(
@@ -886,11 +886,11 @@ struct TempoLaneThresholdsEditor: View {
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
                     Text("Júbilo starts at")
-                        .font(.system(size: 13, weight: .semibold, design: .rounded))
+                        .font(.app(size: 13, weight: .semibold, design: .rounded))
                         .foregroundStyle(theme.primaryText)
                     Spacer()
                     Text("\(Int(jubiloMin.rounded())) BPM")
-                        .font(.system(size: 13, weight: .bold, design: .monospaced))
+                        .font(.app(size: 13, weight: .bold, design: .monospaced))
                         .foregroundStyle(theme.accent)
                 }
                 Slider(
@@ -905,7 +905,7 @@ struct TempoLaneThresholdsEditor: View {
             }
 
             Text("Example: a 100 BPM song is Mid if cutoffs are 92 / 118. Raise “Adoración ends below” to 100 if you want that song treated as slow worship.")
-                .font(.system(size: 11, weight: .medium, design: .rounded))
+                .font(.app(size: 11, weight: .medium, design: .rounded))
                 .foregroundStyle(theme.tertiaryText)
                 .fixedSize(horizontal: false, vertical: true)
         }
