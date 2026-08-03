@@ -46,6 +46,21 @@ struct EQBand: Identifiable, Codable, Equatable, Hashable {
         isEnabled = true
     }
 
+    /// Clamp all fields into legal ranges (use after UI mutation / import).
+    mutating func sanitize() {
+        frequency = Self.clamp(frequency, to: Self.frequencyRange)
+        gain = Self.clamp(gain, to: Self.gainRange)
+        q = Self.clamp(q, to: Self.qRange)
+    }
+
+    /// Convert Q-factor → bandwidth in **octaves** for `AVAudioUnitEQ.bandwidth`.
+    /// RBJ peaking identity: BW_oct = 2 · asinh(1 / (2Q)) / ln(2).
+    static func bandwidthOctaves(fromQ q: Double) -> Float {
+        let safe = max(q, 0.05)
+        guard safe.isFinite else { return 1.0 }
+        return Float(2.0 * asinh(1.0 / (2.0 * safe)) / log(2.0))
+    }
+
     private static func clamp(_ v: Double, to r: ClosedRange<Double>) -> Double {
         min(max(v, r.lowerBound), r.upperBound)
     }
@@ -73,8 +88,21 @@ struct EQLayerState: Codable, Equatable, Hashable {
         } else if n.count > Self.bandCount {
             n = Array(n.prefix(Self.bandCount))
         }
+        for i in n.indices { n[i].sanitize() }
         self.bands = n
         self.isBypassed = isBypassed
+    }
+
+    /// Ensure 10 bands + clamped F/G/Q/preamp before pushing to audio hardware.
+    mutating func sanitizeForDSP() {
+        preamp = min(max(preamp, Self.preampRange.lowerBound), Self.preampRange.upperBound)
+        if bands.count < Self.bandCount {
+            let d = EQBand.defaultTenBands()
+            for i in bands.count ..< Self.bandCount { bands.append(d[i]) }
+        } else if bands.count > Self.bandCount {
+            bands = Array(bands.prefix(Self.bandCount))
+        }
+        for i in bands.indices { bands[i].sanitize() }
     }
 
     mutating func resetAll() {

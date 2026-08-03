@@ -306,6 +306,7 @@ struct EQControlsView: View {
         func update(_ mutate: (inout EQBand) -> Void) {
             var layer = dual.activeLayer
             mutate(&layer.bands[index])
+            layer.bands[index].sanitize() // clamp F / G / Q into legal ranges
             dual.activeLayer = layer
         }
 

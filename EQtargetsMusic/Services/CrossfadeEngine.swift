@@ -280,10 +280,9 @@ enum CrossfadeMath {
         )
     }
 
+    /// Backward-compatible alias — prefer `EQBand.bandwidthOctaves(fromQ:)`.
     static func bandwidthOctaves(fromQ q: Double) -> Float {
-        let safe = max(q, 0.05)
-        guard safe.isFinite else { return 1.0 }
-        return Float(2.0 * asinh(1.0 / (2.0 * safe)) / log(2.0))
+        EQBand.bandwidthOctaves(fromQ: q)
     }
 
 }

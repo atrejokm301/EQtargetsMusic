@@ -298,6 +298,7 @@ final class AudioPlayerEngine: ObservableObject {
 
     func play(tracks: [Track], startAt index: Int = 0) {
         guard !tracks.isEmpty else { return }
+        smartUpNextAutoFillSuppressed = false
         originalQueue = tracks
         if shuffleMode != .off {
             rollShuffleSalt()
@@ -313,6 +314,7 @@ final class AudioPlayerEngine: ObservableObject {
     }
 
     func play(_ track: Track) {
+        smartUpNextAutoFillSuppressed = false
         if let idx = queue.firstIndex(where: { $0.id == track.id }) {
             queueIndex = idx
         } else {
@@ -503,9 +505,16 @@ final class AudioPlayerEngine: ObservableObject {
         return Array(queue.suffix(from: queueIndex + 1))
     }
 
+    /// IDs the user removed from Up Next this session — Smart Tempo must not re-queue them.
+    private(set) var smartUpNextBannedIDs: Set<UUID> = []
+    /// After user clears/removes Up Next, don't auto-refill until natural advance or they add again.
+    private(set) var smartUpNextAutoFillSuppressed = false
+
     /// Insert immediately after the current track (becomes next for skip/crossfade).
     func playNext(_ track: Track) {
         guard !blockQueueMutationIfFading() else { return }
+        smartUpNextAutoFillSuppressed = false
+        smartUpNextBannedIDs.remove(track.id)
         if queue.isEmpty {
             play(track)
             showToast("Playing")
@@ -519,11 +528,14 @@ final class AudioPlayerEngine: ObservableObject {
         }
         queue.insert(track, at: insertAt)
         showToast("Play Next")
+        invalidateStagedNextIfNeeded()
     }
 
     /// Append to end of queue without changing current or immediate next (unless empty).
     func addToQueue(_ track: Track) {
         guard !blockQueueMutationIfFading() else { return }
+        smartUpNextAutoFillSuppressed = false
+        smartUpNextBannedIDs.remove(track.id)
         if queue.isEmpty {
             play(track)
             showToast("Playing")
@@ -561,12 +573,35 @@ final class AudioPlayerEngine: ObservableObject {
         loadAndPlay(queue[absolute], autoSkipMissing: true)
     }
 
-    /// Remove one upcoming item (`upNext` index). Current track is never removed here.
-    func removeUpNext(at upNextIndex: Int) {
+    /// Remove one upcoming item by **stable track id** (not list index — index is stale under SwiftUI swipe).
+    func removeUpNext(trackID: UUID) {
         guard !blockQueueMutationIfFading() else { return }
-        let absolute = queueIndex + 1 + upNextIndex
-        guard absolute < queue.count else { return }
+        guard let absolute = queue.firstIndex(where: { $0.id == trackID }) else { return }
+        // Never remove the currently playing slot.
+        guard absolute > queueIndex else { return }
+
+        let wasImmediateNext = absolute == queueIndex + 1
         queue.remove(at: absolute)
+
+        // User explicitly rejected this track — don't let Smart Tempo put it back.
+        smartUpNextBannedIDs.insert(trackID)
+        smartUpNextAutoFillSuppressed = true
+
+        if wasImmediateNext {
+            // Kill any pre-staged / half-prepared next on the inactive deck.
+            purgeStagedTrackIfMatching(trackID)
+            if isPlaying, !isTransitioning {
+                armCrossfadeWatch()
+            }
+        }
+        showToast("Removed from queue")
+    }
+
+    /// Backward-compatible index API (resolves to current upNext snapshot, then removes by id).
+    func removeUpNext(at upNextIndex: Int) {
+        let items = upNext
+        guard items.indices.contains(upNextIndex) else { return }
+        removeUpNext(trackID: items[upNextIndex].id)
     }
 
     func moveUpNext(from source: IndexSet, to destination: Int) {
@@ -575,6 +610,11 @@ final class AudioPlayerEngine: ObservableObject {
         guard !next.isEmpty else { return }
         next.move(fromOffsets: source, toOffset: destination)
         queue = Array(queue.prefix(queueIndex + 1)) + next
+        // Order changed — clear any deck that no longer matches immediate next.
+        invalidateStagedNextIfNeeded()
+        if isPlaying, !isTransitioning {
+            armCrossfadeWatch()
+        }
     }
 
     /// Drop everything after the current track. Does not stop playback.
@@ -587,8 +627,43 @@ final class AudioPlayerEngine: ObservableObject {
             showToast("Queue empty")
             return
         }
+        // Ban everything that was upcoming so Smart Tempo won't instantly rebuild the same list.
+        for t in upNext {
+            smartUpNextBannedIDs.insert(t.id)
+        }
+        smartUpNextAutoFillSuppressed = true
         queue = Array(queue.prefix(queueIndex + 1))
+        purgeStagedTrackIfMatching(nil) // clear any staged next
+        inactiveDeck.silenceAndStop()
+        inactiveDeck.mixer.outputVolume = 0
+        if isPlaying, !isTransitioning {
+            armCrossfadeWatch()
+        }
         showToast("Cleared Up Next")
+    }
+
+    /// If inactive deck holds a track that is no longer the true next, silence it.
+    private func invalidateStagedNextIfNeeded() {
+        guard let staged = inactiveDeck.track else { return }
+        let nextID = upNext.first?.id
+        if nextID != staged.id {
+            purgeStagedTrackIfMatching(staged.id)
+        }
+    }
+
+    /// Stop inactive-deck audio that was prepared for a removed/replaced next track.
+    private func purgeStagedTrackIfMatching(_ trackID: UUID?) {
+        let stagedID = inactiveDeck.track?.id
+        let shouldPurge = trackID == nil || stagedID == trackID
+        guard shouldPurge else { return }
+
+        if isTransitioning {
+            // Crossfading into a track the user just removed — abort fade, keep current audible.
+            cancelTransition(hardStopOutgoing: true)
+            activeDeck.mixer.outputVolume = 1
+        }
+        inactiveDeck.silenceAndStop()
+        inactiveDeck.mixer.outputVolume = 0
     }
 
     @discardableResult
@@ -1408,35 +1483,76 @@ extension AudioPlayerEngine {
 
     // MARK: - EQ
 
+    /// Push DualEQState → both decks (Target then Fine-Tune on each deck).
+    /// Called whenever `dual` changes (UI / import / presets / restore).
     func applyEQ() {
         applyEQ(to: deckA)
         applyEQ(to: deckB)
     }
 
     private func applyEQ(to deck: PlaybackDeck) {
-        apply(layer: dual.target, unit: deck.targetEQ, globalBypass: dual.isBypassed)
-        apply(layer: dual.fineTune, unit: deck.fineEQ, globalBypass: dual.isBypassed)
+        // Chain: player → targetEQ → fineEQ → mixer (see PlaybackDeck.connect)
+        var target = dual.target
+        var fine = dual.fineTune
+        target.sanitizeForDSP()
+        fine.sanitizeForDSP()
+        apply(layer: target, unit: deck.targetEQ, globalBypass: dual.isBypassed, label: "Target")
+        apply(layer: fine, unit: deck.fineEQ, globalBypass: dual.isBypassed, label: "FineTune")
     }
 
-    private func apply(layer: EQLayerState, unit: AVAudioUnitEQ, globalBypass: Bool) {
-        let layerIdle = layer.isFlat && abs(layer.preamp) < 0.001
-        unit.bypass = globalBypass || layer.isBypassed || layerIdle
-        if unit.bypass {
-            unit.globalGain = 0
-            return
-        }
-        unit.globalGain = Float(layer.preamp)
+    /// Map one EQLayerState onto one AVAudioUnitEQ (10 peaking bands + preamp).
+    ///
+    /// Hardware mapping:
+    /// - `frequency` → Hz (clamped below Nyquist)
+    /// - `gain` → dB peaking gain
+    /// - `q` → `bandwidth` in **octaves** via RBJ conversion (Apple has no Q property)
+    /// - layer `preamp` → `globalGain` dB
+    private func apply(
+        layer: EQLayerState,
+        unit: AVAudioUnitEQ,
+        globalBypass: Bool,
+        label: String
+    ) {
+        let layerIdle = layer.isFlat
+        let unitBypass = globalBypass || layer.isBypassed || layerIdle
+
+        // Always write band parameters even when bypassed so enabling EQ is seamless
+        // and we never leave stale F/G/Q from a previous preset on the unit.
+        unit.globalGain = unitBypass ? 0 : Float(layer.preamp)
+
         let nyq = max(sampleRate / 2 - 200, 1_000)
-        for i in 0 ..< min(unit.bands.count, layer.bands.count) {
+        let count = min(unit.bands.count, layer.bands.count, EQLayerState.bandCount)
+        for i in 0 ..< count {
             let b = layer.bands[i]
             let band = unit.bands[i]
             band.filterType = .parametric
-            band.frequency = Float(min(max(b.frequency, 20), nyq))
-            band.gain = Float(b.gain)
-            let bw = CrossfadeMath.bandwidthOctaves(fromQ: b.q)
+            let freq = min(max(b.frequency, EQBand.frequencyRange.lowerBound), min(EQBand.frequencyRange.upperBound, nyq))
+            let gain = min(max(b.gain, EQBand.gainRange.lowerBound), EQBand.gainRange.upperBound)
+            let q = min(max(b.q, EQBand.qRange.lowerBound), EQBand.qRange.upperBound)
+            band.frequency = Float(freq)
+            band.gain = Float(gain)
+            // AVAudioUnitEQ peaking uses bandwidth (octaves), not Q.
+            let bw = EQBand.bandwidthOctaves(fromQ: q)
             band.bandwidth = max(0.05, min(bw, 5.0))
-            band.bypass = !b.isEnabled || abs(b.gain) < 0.001
+            // Per-band off: disabled in UI, or effectively flat gain (save CPU).
+            band.bypass = unitBypass || !b.isEnabled || abs(gain) < 0.001
         }
+        // Extra hardware bands (shouldn't exist) stay bypassed.
+        if unit.bands.count > count {
+            for i in count ..< unit.bands.count {
+                unit.bands[i].bypass = true
+            }
+        }
+
+        unit.bypass = unitBypass
+
+        #if DEBUG
+        if !unitBypass {
+            playerLog.debug(
+                "EQ \(label, privacy: .public): preamp=\(layer.preamp, format: .fixed(precision: 1))dB bands=\(count) sr=\(self.sampleRate, format: .fixed(precision: 0))"
+            )
+        }
+        #endif
     }
 
     // MARK: - Graph (built once)

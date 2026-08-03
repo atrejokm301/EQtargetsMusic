@@ -3,12 +3,12 @@
 //  EQtargetsMusic
 //
 //  Playing Next — bound to AudioPlayerEngine.queue / queueIndex only.
-//  Glass material + same cached real dominant colors as full player.
+//  Full-bleed glass (no white sheet bottom). Remove Up Next by track id.
 //
 
 import SwiftUI
 
-// MARK: - Glass surface
+// MARK: - Glass surface (full-bleed — never shows system white under the list)
 
 struct QueueGlassSurface: View {
     var visuals: PlayerArtworkVisuals
@@ -22,45 +22,55 @@ struct QueueGlassSurface: View {
         let stops = visuals.gradientStops(maxStops: 4)
 
         ZStack {
-            if !hasArt {
-                Color.black
-            } else if reduceTransparency {
-                Color.black.opacity(isDark ? 0.65 : 0.40)
-                // Preserve real album hues even with stronger surface.
-                roomFill(stops: stops, intensity: isDark ? 0.55 : 0.42)
-            } else {
-                // Soft room-fill under glass — less intense than full player.
-                roomFill(stops: stops, intensity: isDark ? 0.70 : 0.55)
+            // Base fill always covers the entire sheet (including empty list bottom).
+            // Prevents the system white card from showing through when presentationBackground is clear.
+            Color.black.opacity(isDark ? 0.88 : 0.78)
 
-                Rectangle()
-                    .fill(.ultraThinMaterial)
-                    .opacity(isDark ? 0.55 : 0.48)
-
-                VStack(spacing: 0) {
-                    Spacer(minLength: 0)
-                    Color.black.opacity(isDark ? 0.10 : 0.05)
-                        .frame(height: 100)
-                }
-                .allowsHitTesting(false)
+            if hasArt {
+                roomFill(stops: stops, intensity: reduceTransparency ? 0.50 : (isDark ? 0.72 : 0.60))
             }
 
+            if !reduceTransparency {
+                Rectangle()
+                    .fill(.ultraThinMaterial)
+                    .opacity(isDark ? 0.50 : 0.42)
+            } else {
+                Color.black.opacity(isDark ? 0.35 : 0.25)
+            }
+
+            // Soft top sheen only — no partial bottom strip (that caused uneven gray/white bands).
             VStack(spacing: 0) {
                 LinearGradient(
                     colors: [
-                        Color.white.opacity(isDark ? 0.06 : 0.10),
+                        Color.white.opacity(isDark ? 0.07 : 0.08),
                         Color.clear
                     ],
                     startPoint: .top,
                     endPoint: .bottom
                 )
-                .frame(height: 18)
+                .frame(height: 28)
                 Spacer(minLength: 0)
             }
             .allowsHitTesting(false)
+
+            // Subtle bottom vignette matching the rest of the surface (not a different color).
+            VStack(spacing: 0) {
+                Spacer(minLength: 0)
+                LinearGradient(
+                    colors: [
+                        Color.clear,
+                        Color.black.opacity(isDark ? 0.28 : 0.22)
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .frame(height: 120)
+            }
+            .allowsHitTesting(false)
         }
+        .ignoresSafeArea()
     }
 
-    /// Softer multi-bloom of the same real dominant colors as the full player.
     private func roomFill(stops: [Color], intensity: Double) -> some View {
         let c0 = stops.indices.contains(0) ? stops[0] : Color.clear
         let c1 = stops.indices.contains(1) ? stops[1] : c0
@@ -68,24 +78,24 @@ struct QueueGlassSurface: View {
         return ZStack {
             RadialGradient(
                 colors: [c0.opacity(0.9 * intensity), c1.opacity(0.35 * intensity), .clear],
-                center: UnitPoint(x: 0.5, y: 0.2),
+                center: UnitPoint(x: 0.5, y: 0.18),
                 startRadius: 10,
-                endRadius: 380
+                endRadius: 420
             )
             RadialGradient(
-                colors: [c1.opacity(0.55 * intensity), c2.opacity(0.2 * intensity), .clear],
-                center: UnitPoint(x: 0.15, y: 0.7),
+                colors: [c1.opacity(0.50 * intensity), c2.opacity(0.18 * intensity), .clear],
+                center: UnitPoint(x: 0.12, y: 0.75),
                 startRadius: 8,
-                endRadius: 300
+                endRadius: 340
             )
             .blendMode(.plusLighter)
             LinearGradient(
-                colors: stops.isEmpty ? [.clear] : stops.map { $0.opacity(0.45 * intensity) },
+                colors: stops.isEmpty ? [.clear] : stops.map { $0.opacity(0.40 * intensity) },
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             )
             .blendMode(.plusLighter)
-            .opacity(0.5)
+            .opacity(0.45)
         }
         .allowsHitTesting(false)
     }
@@ -103,7 +113,6 @@ struct QueueSheet: View {
     var artworkVisuals: PlayerArtworkVisuals? = nil
 
     private var upNext: [Track] { player.upNext }
-    /// Queue mutations blocked during crossfade — do NOT use View.disabled (greys out rows).
     private var editsBlocked: Bool { player.isTransitioning }
 
     private var resolvedVisuals: PlayerArtworkVisuals {
@@ -122,7 +131,6 @@ struct QueueSheet: View {
                         Button {
                             dismiss()
                         } label: {
-                            // TrackRowView already shows waveform when isPlaying.
                             TrackRowView(track: current, isPlaying: true)
                         }
                         .buttonStyle(.plain)
@@ -138,6 +146,7 @@ struct QueueSheet: View {
                 } header: {
                     Text("Now Playing")
                         .foregroundStyle(theme.secondaryText)
+                        .textCase(nil)
                 }
 
                 Section {
@@ -153,21 +162,23 @@ struct QueueSheet: View {
                         .padding(.vertical, 8)
                         .listRowBackground(Color.clear)
                     } else {
-                        ForEach(Array(upNext.enumerated()), id: \.element.id) { index, track in
+                        // Identity = track id only (never enumerated index) so swipe remove is correct.
+                        ForEach(upNext) { track in
                             Button {
                                 guard !editsBlocked else { return }
-                                player.playUpNextItem(at: index)
+                                if let idx = upNext.firstIndex(where: { $0.id == track.id }) {
+                                    player.playUpNextItem(at: idx)
+                                }
                                 dismiss()
                             } label: {
                                 TrackRowView(track: track, isPlaying: false)
                             }
                             .buttonStyle(.plain)
-                            // Full opacity always — editsBlocked only gates actions, not look.
                             .listRowBackground(upNextRowBackground)
                             .swipeActions(edge: .trailing, allowsFullSwipe: !editsBlocked) {
                                 Button(role: .destructive) {
                                     guard !editsBlocked else { return }
-                                    player.removeUpNext(at: index)
+                                    player.removeUpNext(trackID: track.id)
                                 } label: {
                                     Label("Remove", systemImage: "trash")
                                 }
@@ -188,6 +199,7 @@ struct QueueSheet: View {
                         }
                     }
                     .foregroundStyle(theme.secondaryText)
+                    .textCase(nil)
                 } footer: {
                     if editsBlocked {
                         Text("Queue edits pause briefly during crossfade.")
@@ -196,21 +208,25 @@ struct QueueSheet: View {
                     }
                 }
             }
-            .listStyle(.insetGrouped)
+            .listStyle(.plain)
             .scrollContentBackground(.hidden)
+            .listRowSeparatorTint(Color.white.opacity(scheme == .dark ? 0.12 : 0.10))
             .background {
                 QueueGlassSurface(
                     visuals: resolvedVisuals,
                     reduceTransparency: reduceTransparency
                 )
-                .ignoresSafeArea()
-                // Animate only the glass surface, not list row opacity.
                 .animation(.easeInOut(duration: 0.30), value: resolvedVisuals.trackID)
+            }
+            // Extra bottom pad so last rows aren't over home indicator; glass still fills behind.
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                Color.clear.frame(height: 8)
             }
             .environment(\.editMode, .constant(upNext.isEmpty || editsBlocked ? .inactive : .active))
             .navigationTitle("Playing Next")
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(.hidden, for: .navigationBar)
+            .toolbarColorScheme(.dark, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("Done") { dismiss() }
@@ -231,30 +247,31 @@ struct QueueSheet: View {
                 }
             }
         }
+        // Keep chrome dark so grouped system whites never flash through.
+        .preferredColorScheme(.dark)
     }
 
-    /// Soft island under Now Playing — no harsh accent outline “pill”.
     private var nowPlayingRowBackground: some View {
         RoundedRectangle(cornerRadius: 16, style: .continuous)
-            .fill(reduceTransparency ? theme.elevated.opacity(0.92) : Color.clear)
+            .fill(Color.white.opacity(scheme == .dark ? 0.08 : 0.10))
             .background {
                 if !reduceTransparency {
                     RoundedRectangle(cornerRadius: 16, style: .continuous)
                         .fill(.ultraThinMaterial)
+                        .opacity(0.55)
                 }
             }
             .overlay {
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(theme.accent.opacity(scheme == .dark ? 0.10 : 0.08))
+                    .fill(theme.accent.opacity(0.12))
             }
             .overlay {
-                // Hairline edge only — not a thick accent border.
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
                     .strokeBorder(
                         LinearGradient(
                             colors: [
-                                Color.white.opacity(scheme == .dark ? 0.14 : 0.35),
-                                theme.accent.opacity(0.12)
+                                Color.white.opacity(0.16),
+                                theme.accent.opacity(0.14)
                             ],
                             startPoint: .topLeading,
                             endPoint: .bottomTrailing
@@ -263,16 +280,13 @@ struct QueueSheet: View {
                     )
             }
             .padding(.vertical, 2)
-            .padding(.horizontal, 2)
+            .padding(.horizontal, 4)
     }
 
     private var upNextRowBackground: some View {
         RoundedRectangle(cornerRadius: 12, style: .continuous)
-            .fill(
-                reduceTransparency
-                    ? theme.elevated.opacity(0.50)
-                    : Color.primary.opacity(scheme == .dark ? 0.07 : 0.06)
-            )
+            .fill(Color.white.opacity(0.06))
             .padding(.vertical, 1)
+            .padding(.horizontal, 2)
     }
 }

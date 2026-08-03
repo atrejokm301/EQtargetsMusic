@@ -25,6 +25,10 @@ protocol SmartShuffleQueueWriting: AnyObject {
     var isTransitioning: Bool { get }
     var queueTrackIDs: Set<UUID> { get }
     var queueFileKeys: Set<String> { get }
+    /// Tracks the user removed from Up Next — never auto-requeue these.
+    var smartUpNextBannedIDs: Set<UUID> { get }
+    /// User cleared/edited Up Next — don't instant-refill until they play something new.
+    var smartUpNextAutoFillSuppressed: Bool { get }
     func playNext(_ track: Track)
 }
 
@@ -387,6 +391,8 @@ enum SmartShuffleHost {
         guard enabled else { return false }
         guard !queue.isTransitioning else { return false }
         guard let current = queue.currentTrack else { return false }
+        // User deleted/cleared Up Next — respect that until they start a new play path.
+        guard !queue.smartUpNextAutoFillSuppressed else { return false }
         guard queue.upNext.isEmpty else {
             if lastAttemptCurrentID != current.id {
                 lastAttemptCurrentID = nil
@@ -402,6 +408,7 @@ enum SmartShuffleHost {
         }
 
         var excludeIDs = queue.queueTrackIDs
+        excludeIDs.formUnion(queue.smartUpNextBannedIDs)
         excludeIDs.insert(current.id)
 
         let resolved = SmartShuffleSelector.resolveFromLibrary(current, library: library)
