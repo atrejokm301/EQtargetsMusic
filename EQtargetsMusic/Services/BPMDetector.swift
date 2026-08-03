@@ -3,15 +3,16 @@
 //  EQtargetsMusic
 //
 //  Offline tempo estimate from audio (never on the playback render path).
-//  v2 — multi-window spectral-flux onsets + lag reinforcement + confidence gate.
+//  v2.1 — battery/thermal lean: energy-flux onsets (not per-hop FFT),
+//  at most two short windows, smaller decode cap.
 //
 //  Pipeline:
-//  1. Decode mono PCM (chunked convert, ~11 kHz)
+//  1. Decode mono PCM (chunked convert, ~8 kHz)
 //  2. Skip leading silence / soft intro
-//  3. Analyze 2–3 windows of music
-//  4. Spectral-flux onset envelope
+//  3. Analyze 1–2 windows of music
+//  4. Energy-flux onset envelope (cheap)
 //  5. Autocorrelation + harmonic lag reinforcement + tempo prior
-//  6. Confidence gate + half/double correction
+//  6. Confidence gate + octave correction
 //
 
 import Foundation
@@ -22,11 +23,11 @@ import os
 private let bpmLog = Logger(subsystem: "com.eqtargets.music", category: "BPM")
 
 enum BPMDetector {
-    private static let targetSampleRate: Double = 11_025
-    private static let maxReadSeconds: Double = 72
-    private static let windowSeconds: Double = 14
-    private static let hopSize = 128
-    private static let fftSize = 512
+    /// Lower SR = less RAM/CPU on bulk library analysis.
+    private static let targetSampleRate: Double = 8_000
+    private static let maxReadSeconds: Double = 36
+    private static let windowSeconds: Double = 10
+    private static let hopSize = 160
     private static let bpmMin = 60.0
     private static let bpmMax = 190.0
     private static let minConfidence: Double = 0.12
@@ -82,40 +83,35 @@ enum BPMDetector {
         let windowSamples = Int(windowSeconds * targetSampleRate)
         guard samples.count > windowSamples / 2 else { return nil }
 
-        var windows: [(offset: Int, length: Int)] = []
-        windows.append((0, min(windowSamples, samples.count)))
-        if samples.count > windowSamples + hopSize * 40 {
-            let mid = min(samples.count - windowSamples, windowSamples * 2 / 3)
-            if mid > hopSize * 20 {
-                windows.append((mid, windowSamples))
-            }
-        }
-        if samples.count > windowSamples * 2 {
-            let late = min(samples.count - windowSamples, windowSamples + windowSamples / 2)
-            if late > hopSize * 40 {
-                windows.append((late, windowSamples))
-            }
-        }
-
-        var votes: [Vote] = []
-        votes.reserveCapacity(windows.count)
-        for w in windows {
-            let end = min(w.offset + w.length, samples.count)
-            guard end - w.offset > hopSize * 60 else { continue }
-            let slice = Array(samples[w.offset ..< end])
-            if let vote = estimateWindow(samples: slice) {
-                votes.append(vote)
-            }
-        }
-
-        guard let best = combineVotes(votes) else {
+        // At most two windows — first hit often enough; second only if first is weak.
+        let firstLen = min(windowSamples, samples.count)
+        guard firstLen > hopSize * 50 else { return nil }
+        let firstSlice = Array(samples[0 ..< firstLen])
+        guard var best = estimateWindow(samples: firstSlice) else {
             bpmLog.debug("no confident BPM: \(fileURL.lastPathComponent, privacy: .public)")
             return nil
         }
 
-        let snapped = (best * 2).rounded() / 2
+        if best.confidence < 0.22, samples.count > windowSamples + hopSize * 40 {
+            let mid = min(samples.count - windowSamples, windowSamples / 2)
+            if mid > hopSize * 20 {
+                let end = min(mid + windowSamples, samples.count)
+                let second = Array(samples[mid ..< end])
+                if let v2 = estimateWindow(samples: second) {
+                    if let merged = combineVotes([best, v2]) {
+                        let snapped = (merged * 2).rounded() / 2
+                        bpmLog.info(
+                            "BPM \(snapped, format: .fixed(precision: 1)) ← \(fileURL.lastPathComponent, privacy: .public) votes=2"
+                        )
+                        return snapped
+                    }
+                }
+            }
+        }
+
+        let snapped = (best.bpm * 2).rounded() / 2
         bpmLog.info(
-            "BPM \(snapped, format: .fixed(precision: 1)) ← \(fileURL.lastPathComponent, privacy: .public) votes=\(votes.count)"
+            "BPM \(snapped, format: .fixed(precision: 1)) ← \(fileURL.lastPathComponent, privacy: .public) votes=1 conf=\(best.confidence, format: .fixed(precision: 2))"
         )
         return snapped
     }
@@ -222,7 +218,8 @@ enum BPMDetector {
     // MARK: - One window
 
     nonisolated private static func estimateWindow(samples: [Float]) -> Vote? {
-        let env = spectralFluxEnvelope(samples: samples)
+        // Energy flux only — spectral FFT-per-hop was a thermal hog on bulk library scans.
+        let env = energyFluxEnvelope(samples: samples, hop: hopSize)
         guard env.count > 80 else { return nil }
 
         var hp = env
@@ -329,71 +326,7 @@ enum BPMDetector {
         return b
     }
 
-    // MARK: - Spectral flux
-
-    nonisolated private static func spectralFluxEnvelope(samples: [Float]) -> [Float] {
-        let n = samples.count
-        let hop = hopSize
-        let fftN = fftSize
-        guard n > fftN + hop else {
-            return energyFluxEnvelope(samples: samples, hop: hop)
-        }
-
-        guard let fftSetup = vDSP_create_fftsetup(
-            vDSP_Length(log2(Double(fftN))),
-            FFTRadix(kFFTRadix2)
-        ) else {
-            return energyFluxEnvelope(samples: samples, hop: hop)
-        }
-        defer { vDSP_destroy_fftsetup(fftSetup) }
-
-        var window = [Float](repeating: 0, count: fftN)
-        vDSP_hann_window(&window, vDSP_Length(fftN), Int32(vDSP_HANN_NORM))
-
-        var prevMag = [Float](repeating: 0, count: fftN / 2)
-        var env: [Float] = []
-        env.reserveCapacity(max(n / hop, 1))
-
-        var realp = [Float](repeating: 0, count: fftN / 2)
-        var imagp = [Float](repeating: 0, count: fftN / 2)
-        var i = 0
-
-        while i + fftN <= n {
-            var frame = Array(samples[i ..< i + fftN])
-            vDSP_vmul(frame, 1, window, 1, &frame, 1, vDSP_Length(fftN))
-
-            realp.withUnsafeMutableBufferPointer { rBuf in
-                imagp.withUnsafeMutableBufferPointer { iBuf in
-                    var split = DSPSplitComplex(realp: rBuf.baseAddress!, imagp: iBuf.baseAddress!)
-                    frame.withUnsafeBufferPointer { fBuf in
-                        fBuf.baseAddress!.withMemoryRebound(to: DSPComplex.self, capacity: fftN / 2) { complexPtr in
-                            vDSP_ctoz(complexPtr, 2, &split, 1, vDSP_Length(fftN / 2))
-                        }
-                    }
-                    vDSP_fft_zrip(
-                        fftSetup,
-                        &split,
-                        1,
-                        vDSP_Length(log2(Double(fftN))),
-                        FFTDirection(FFT_FORWARD)
-                    )
-
-                    var mag = [Float](repeating: 0, count: fftN / 2)
-                    vDSP_zvabs(&split, 1, &mag, 1, vDSP_Length(fftN / 2))
-
-                    var flux: Float = 0
-                    for b in 1 ..< mag.count {
-                        let d = mag[b] - prevMag[b]
-                        if d > 0 { flux += d }
-                    }
-                    prevMag = mag
-                    env.append(flux)
-                }
-            }
-            i += hop
-        }
-        return env
-    }
+    // MARK: - Onset envelope (energy flux)
 
     nonisolated private static func energyFluxEnvelope(samples: [Float], hop: Int) -> [Float] {
         let count = samples.count

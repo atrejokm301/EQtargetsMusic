@@ -47,9 +47,10 @@ struct SilenceTrim: Equatable {
 
 enum SilenceAnalyzer {
     /// How far into the file we look for music start (live intros can be long).
-    static let maxIntroScan: TimeInterval = 72
+    /// Capped for battery — 48s covers most worship intros without a full-file read.
+    static let maxIntroScan: TimeInterval = 48
     /// How much tail we search for trailing silence / applause.
-    static let maxOutroScan: TimeInterval = 120
+    static let maxOutroScan: TimeInterval = 72
     /// Keep a little tail after last loud window so endings don't clip.
     static let outroPad: TimeInterval = 0.55
     /// Music must stay loud this long to count as start (filters claps).

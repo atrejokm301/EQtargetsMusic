@@ -217,7 +217,10 @@ final class AudioPlayerEngine: ObservableObject {
     private var cachedNowPlayingArtwork: MPMediaItemArtwork?
     private var cachedArtworkTrackID: UUID?
     private var lastNowPlayingPush: TimeInterval = 0
-    private let progressTickInterval: TimeInterval = 0.5
+    /// Foreground UI / crossfade backup tick. Background uses a slower interval.
+    private var progressTickInterval: TimeInterval {
+        UIApplication.shared.applicationState == .background ? 1.0 : 0.75
+    }
     private let progressPublishEpsilon: TimeInterval = 0.25
 
     private var fadingOutFile: AVAudioFile?
@@ -451,8 +454,10 @@ final class AudioPlayerEngine: ObservableObject {
                   ? String(format: "Sleep in %dh %dm", minutes / 60, minutes % 60)
                   : "Sleep in \(minutes) min")
 
-        let labelTimer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.refreshSleepTimerLabel() }
+        // 5s is enough for a mm:ss label and avoids @Published spam every second.
+        let labelTimer = Timer(timeInterval: 5.0, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            MainActor.assumeIsolated { self.refreshSleepTimerLabel() }
         }
         RunLoop.main.add(labelTimer, forMode: .common)
         sleepLabelTimer = labelTimer
@@ -968,12 +973,13 @@ extension AudioPlayerEngine {
         let outMixer = outgoing.mixer
         let inMixer = incoming.mixer
         let outPlayer = outgoing.player
-        // 45 Hz is smooth enough for long washes without excessive wakeups.
-        let tick: TimeInterval = 1.0 / 45.0
+        // ~20 Hz is plenty for volume ramps; avoids 45 Hz main-thread wakeups.
+        let tick: TimeInterval = 1.0 / 20.0
 
         let timer = Timer(timeInterval: tick, repeats: true) { [weak self] t in
             guard let self else { t.invalidate(); return }
-            Task { @MainActor in
+            // Timer is on the main RunLoop — no nested Task hop.
+            MainActor.assumeIsolated {
                 guard self.transitionToken == token, self.loadGeneration == gen else {
                     t.invalidate()
                     self.crossfadeTimer = nil
@@ -1357,10 +1363,18 @@ extension AudioPlayerEngine {
     /// Background full head/tail refine; updates cache + live playable end for crossfade arming.
     private func refineSilenceTrimInBackground(track: Track, url: URL, generation: UInt64) {
         guard crossfade.skipSilence else { return }
+        // Skip heavy refine when the device is warm or in Low Power — fast intro trim is enough.
+        if ProcessInfo.processInfo.isLowPowerModeEnabled { return }
+        switch ProcessInfo.processInfo.thermalState {
+        case .serious, .critical: return
+        case .fair: break // still allow, but lower priority below
+        default: break
+        }
         let key = silenceCacheKey(for: track, url: url)
         if let hit = silenceTrimCache[key], hit.isFullyRefined { return }
 
-        Task.detached(priority: .utility) { [weak self] in
+        let priority: TaskPriority = ProcessInfo.processInfo.thermalState == .fair ? .background : .utility
+        Task.detached(priority: priority) { [weak self] in
             guard let trim = SilenceAnalyzer.analyzeURL(url) else { return }
             await MainActor.run { [weak self] in
                 guard let self else { return }
@@ -1713,7 +1727,7 @@ extension AudioPlayerEngine {
         // Always tick while playing (including background) — natural crossfade depends on it.
         let timer = Timer(timeInterval: progressTickInterval, repeats: true) { [weak self] _ in
             guard let self else { return }
-            Task { @MainActor in self.tickTime() }
+            MainActor.assumeIsolated { self.tickTime() }
         }
         RunLoop.main.add(timer, forMode: .common)
         progressTimer = timer
@@ -1756,13 +1770,13 @@ extension AudioPlayerEngine {
         let gen = loadGeneration
         let plan = peekCrossfadePlan(remaining: nil)
         let rem = activeRemainingSeconds()
-        // Near the end, poll faster so long fades start on time.
+        // Near the end, poll a bit faster so long fades start on time (still battery-aware).
         let nearEnd = plan.effective > 0 && rem <= plan.effective * 2.5 + 2
-        let interval: TimeInterval = nearEnd ? 0.10 : 0.25
+        let interval: TimeInterval = nearEnd ? 0.20 : 0.40
 
         let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
             guard let self else { return }
-            Task { @MainActor in
+            MainActor.assumeIsolated {
                 guard self.transitionToken == token, self.loadGeneration == gen else { return }
                 self.fireCrossfadeIfNeeded()
             }

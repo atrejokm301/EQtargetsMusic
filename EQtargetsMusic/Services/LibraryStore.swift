@@ -30,11 +30,12 @@ final class LibraryStore: ObservableObject {
     /// Soft cap per import session — high enough for full libraries (was never a hard 100 limit in code;
     /// memory from full-res art was the real bottleneck). Raise freely if needed.
     static let maxFilesPerImport = 10_000
-    /// Offline BPM analysis cap per idle session (battery). Already-checked tracks are skipped.
-    static let maxBPMAnalysesPerScan = 48
+    /// Offline BPM analysis cap per idle batch (battery/thermals).
+    /// Smaller batches + longer cool-downs keep the phone cooler during library fills.
+    static let maxBPMAnalysesPerScan = 12
     /// Bump when detector improves — re-runs tracks that were “checked” but got no BPM.
-    /// v4 = spectral-flux multi-window detector rewrite.
-    private static let bpmEngineVersion = 4
+    /// v5 = energy-flux lean detector (battery/thermal pass).
+    private static let bpmEngineVersion = 5
     private static let bpmEngineVersionKey = "eqtargets.bpmEngineVersion"
 
     static let supportedExtensions: Set<String> = [
@@ -97,7 +98,7 @@ final class LibraryStore: ObservableObject {
     }
 
     /// Quiet background BPM for unchecked tracks only (no UI chrome).
-    /// Skips when backgrounded, thermally warm, or low power mode.
+    /// Skips when backgrounded, thermally warm, low power, or already scheduled.
     func startAutoBPMIfNeeded() {
         guard isCatalogReady else { return }
         guard !isAnalyzingBPM, !isScanning else { return }
@@ -108,10 +109,11 @@ final class LibraryStore: ObservableObject {
         if let autoBPMTask, !autoBPMTask.isCancelled { return }
         autoBPMTask = Task(priority: .utility) { [weak self] in
             // Wait until UI is idle so first frame / playback stays snappy.
-            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            try? await Task.sleep(nanoseconds: 6_000_000_000)
             guard let self, !Task.isCancelled else { return }
             guard Self.deviceAllowsBackgroundWork else { return }
-            await self.analyzeMissingBPMs(limit: Self.maxBPMAnalysesPerScan)
+            let limit = Self.batchLimitForThermal()
+            await self.analyzeMissingBPMs(limit: limit)
         }
     }
 
@@ -120,11 +122,26 @@ final class LibraryStore: ObservableObject {
         if ProcessInfo.processInfo.isLowPowerModeEnabled { return false }
         switch ProcessInfo.processInfo.thermalState {
         case .serious, .critical: return false
-        default: break
+        case .fair:
+            // Allow work but only tiny batches (see batchLimitForThermal).
+            break
+        case .nominal:
+            break
+        @unknown default:
+            break
         }
-        // Don't start heavy decode while app is not active.
-        if UIApplication.shared.applicationState == .background { return false }
+        // Don't start heavy decode while app is not active / backgrounded.
+        if UIApplication.shared.applicationState != .active { return false }
         return true
+    }
+
+    /// Shrink batch size when the device is warm.
+    private static func batchLimitForThermal() -> Int {
+        switch ProcessInfo.processInfo.thermalState {
+        case .fair: return max(4, maxBPMAnalysesPerScan / 3)
+        case .serious, .critical: return 0
+        default: return maxBPMAnalysesPerScan
+        }
     }
 
     /// When the detector is upgraded, re-open tracks that were marked checked with no BPM.
@@ -334,11 +351,17 @@ final class LibraryStore: ObservableObject {
         guard !isAnalyzingBPM else { return }
         guard Self.deviceAllowsBackgroundWork else { return }
 
+        let effectiveLimit = min(limit, Self.batchLimitForThermal())
+        guard effectiveLimit > 0 else { return }
+
         isAnalyzingBPM = true
         defer { isAnalyzingBPM = false }
 
-        let batch = Array(pending.prefix(limit))
-        statusMessage = "BPM \(knownBPMCount)/\(tracks.count) · analyzing…"
+        let batch = Array(pending.prefix(effectiveLimit))
+        // Avoid publishing status every batch when quiet auto-run — less SwiftUI churn.
+        if effectiveLimit >= Self.maxBPMAnalysesPerScan {
+            statusMessage = "BPM \(knownBPMCount)/\(tracks.count) · analyzing…"
+        }
 
         // Results staged off the hot path — no per-track SwiftUI invalidation.
         // `resolved` false → leave unchecked so a later pass can retry (missing file).
@@ -347,13 +370,15 @@ final class LibraryStore: ObservableObject {
 
         for (offset, track) in batch.enumerated() {
             if Task.isCancelled { break }
-            if offset % 2 == 0 {
+            // Re-check thermals every file — bail early if the phone warms up.
+            if offset % 1 == 0 {
                 guard Self.deviceAllowsBackgroundWork else { break }
+                if Self.batchLimitForThermal() == 0 { break }
                 await Task.yield()
             }
 
             if let url = track.resolvedURL() {
-                let bpm = await Task.detached(priority: .utility) {
+                let bpm = await Task.detached(priority: .background) {
                     BPMDetector.estimateBPM(fileURL: url)
                 }.value
                 results.append((track.id, track.fileKey, bpm, true))
@@ -362,8 +387,8 @@ final class LibraryStore: ObservableObject {
                 results.append((track.id, track.fileKey, nil, false))
             }
 
-            // Breathing room so playback / UI keep CPU.
-            try? await Task.sleep(nanoseconds: 25_000_000)
+            // Longer pause between files so audio / UI keep the cores.
+            try? await Task.sleep(nanoseconds: 80_000_000) // 80ms
         }
 
         guard !results.isEmpty else { return }
@@ -402,10 +427,16 @@ final class LibraryStore: ObservableObject {
     private func scheduleFollowUpBPMBatch() {
         autoBPMTask?.cancel()
         autoBPMTask = Task(priority: .utility) { [weak self] in
-            try? await Task.sleep(nanoseconds: 5_000_000_000) // 5s cool-down between batches
+            // Longer cool-down keeps sustained analysis from cooking the phone.
+            let coolDown: UInt64
+            switch ProcessInfo.processInfo.thermalState {
+            case .fair: coolDown = 25_000_000_000
+            default: coolDown = 15_000_000_000
+            }
+            try? await Task.sleep(nanoseconds: coolDown)
             guard let self, !Task.isCancelled else { return }
             guard Self.deviceAllowsBackgroundWork else { return }
-            await self.analyzeMissingBPMs(limit: Self.maxBPMAnalysesPerScan)
+            await self.analyzeMissingBPMs(limit: Self.batchLimitForThermal())
         }
     }
 
