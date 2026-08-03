@@ -290,6 +290,11 @@ struct RootTabView: View {
         }
         .task {
             await library.ensureLibraryReady()
+            // Restore last song + queue + position after catalog is available (paused until Play).
+            player.restorePlaybackSession(libraryTracks: library.tracks)
+            player.syncLibraryMetadata(from: library.tracks)
+            refreshPlayerArtworkVisuals()
+            reconcileWithTrack()
         }
         .sheet(isPresented: $showHamburgerSheet) {
             HamburgerMenuSheet(

@@ -203,6 +203,7 @@ final class AudioPlayerEngine: ObservableObject {
     private let crossfadeDefaultsKey = "eqtargets.crossfadeSettings"
     private static let repeatDefaultsKey = "eqtargets.repeatMode"
     private static let shuffleDefaultsKey = "eqtargets.shuffleMode"
+    private static let sessionDefaultsKey = "eqtargets.playbackSession.v1"
 
     /// Invalidates stale schedule / fade / automix callbacks.
     private var loadGeneration: UInt64 = 0
@@ -212,8 +213,11 @@ final class AudioPlayerEngine: ObservableObject {
 
     private var eqPersistTask: Task<Void, Never>?
     private var crossfadePersistTask: Task<Void, Never>?
+    private var sessionPersistTask: Task<Void, Never>?
     private var sleepTimerTask: Task<Void, Never>?
     private var sleepLabelTimer: Timer?
+    /// Avoid restoring twice / overwriting an intentional empty state.
+    private var didAttemptSessionRestore = false
     private var cachedNowPlayingArtwork: MPMediaItemArtwork?
     private var cachedArtworkTrackID: UUID?
     private var lastNowPlayingPush: TimeInterval = 0
@@ -248,6 +252,7 @@ final class AudioPlayerEngine: ObservableObject {
         sleepLabelTimer?.invalidate()
         eqPersistTask?.cancel()
         crossfadePersistTask?.cancel()
+        sessionPersistTask?.cancel()
         sleepTimerTask?.cancel()
     }
 
@@ -355,7 +360,77 @@ final class AudioPlayerEngine: ObservableObject {
         cancelAutomixTimer()
         if engine.isRunning { engine.pause() }
         flushPersistedSettings()
+        persistPlaybackSessionNow()
         updateNowPlaying(force: true)
+    }
+
+    // MARK: - Session restore (last song + queue + position)
+
+    /// After library catalog is ready: restore mini-player / Now Playing without autoplay.
+    /// Tap Play resumes from the saved position. New plays from the library replace the session.
+    func restorePlaybackSession(libraryTracks: [Track]) {
+        guard !didAttemptSessionRestore else { return }
+        didAttemptSessionRestore = true
+        guard currentTrack == nil else { return }
+        guard !libraryTracks.isEmpty else { return }
+        guard let snap = Self.loadPlaybackSessionSnapshot() else { return }
+        guard !snap.queue.isEmpty else { return }
+
+        func resolve(_ ref: PlaybackSessionSnapshot.TrackRef) -> Track? {
+            if let t = libraryTracks.first(where: { $0.id == ref.id }) { return t }
+            if let key = ref.fileKey, !key.isEmpty,
+               let t = libraryTracks.first(where: { $0.fileKey == key }) { return t }
+            return libraryTracks.first {
+                $0.title == ref.title
+                    && $0.artist == ref.artist
+                    && abs($0.duration - ref.duration) < 1.5
+            }
+        }
+
+        let restoredQueue = snap.queue.compactMap(resolve)
+        guard !restoredQueue.isEmpty else {
+            Self.clearPlaybackSessionSnapshot()
+            return
+        }
+
+        // Map saved index to restored list (drop missing files).
+        var index = min(max(snap.queueIndex, 0), snap.queue.count - 1)
+        // Prefer matching the intended current ref if possible.
+        if snap.queue.indices.contains(index),
+           let want = resolve(snap.queue[index]),
+           let mapped = restoredQueue.firstIndex(where: { $0.id == want.id }) {
+            index = mapped
+        } else {
+            index = min(index, restoredQueue.count - 1)
+        }
+
+        let original = snap.originalQueue.compactMap(resolve)
+        originalQueue = original.isEmpty ? restoredQueue : original
+        queue = restoredQueue
+        queueIndex = index
+
+        let track = restoredQueue[index]
+        guard track.resolvedURL() != nil else {
+            // Try later items.
+            if let playableIdx = restoredQueue.indices.first(where: { restoredQueue[$0].resolvedURL() != nil }) {
+                queueIndex = playableIdx
+                loadAndPlay(restoredQueue[playableIdx], autoSkipMissing: true, autoPlay: false)
+            } else {
+                Self.clearPlaybackSessionSnapshot()
+            }
+            return
+        }
+
+        loadAndPlay(track, autoSkipMissing: false, autoPlay: false)
+        let pos = min(max(snap.positionSeconds, 0), max(duration - 0.25, 0))
+        if pos > 0.5 {
+            seek(to: pos)
+            // seek may leave paused if wasPlaying was false
+            if isPlaying { pause() }
+        }
+        playerLog.info(
+            "sessionRestore: “\(track.title, privacy: .public)” pos=\(pos, format: .fixed(precision: 1))s queue=\(restoredQueue.count) idx=\(self.queueIndex)"
+        )
     }
 
     func togglePlayPause() {
@@ -1113,7 +1188,7 @@ extension AudioPlayerEngine {
 
     // MARK: - Load / play
 
-    private func loadAndPlay(_ track: Track, autoSkipMissing: Bool = false) {
+    private func loadAndPlay(_ track: Track, autoSkipMissing: Bool = false, autoPlay: Bool = true) {
         guard let url = track.resolvedURL() else {
             showToast("File missing — re-import “\(track.title)”")
             if autoSkipMissing { skipMissingAndContinue() }
@@ -1213,13 +1288,23 @@ extension AudioPlayerEngine {
 
         do {
             try ensureEngineRunning()
-            activeDeck.player.play()
-            isPlaying = true
             consecutiveMissingSkips = 0
-            startProgressTimer()
-            armCrossfadeWatch()
-            // Now Playing metadata after audio starts (artwork decode shouldn't delay sound).
+            if autoPlay {
+                activeDeck.player.play()
+                isPlaying = true
+                startProgressTimer()
+                armCrossfadeWatch()
+            } else {
+                // Prepared for resume: show mini-player / Now Playing, wait for user Play.
+                activeDeck.player.pause()
+                isPlaying = false
+                stopProgressTimer()
+                cancelAutomixTimer()
+                if engine.isRunning { engine.pause() }
+            }
+            // Now Playing metadata after graph is ready (artwork decode shouldn't delay sound).
             updateNowPlaying(force: true)
+            schedulePersistPlaybackSession()
             // Refine outro (and intro) off-main; update end marker for natural crossfade.
             refineSilenceTrimInBackground(track: track, url: url, generation: gen)
         } catch {
@@ -1656,6 +1741,16 @@ extension AudioPlayerEngine {
             }
         }
         NotificationCenter.default.addObserver(
+            forName: UIApplication.willTerminateNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            MainActor.assumeIsolated {
+                self.flushPersistedSettings()
+            }
+        }
+        NotificationCenter.default.addObserver(
             forName: UIApplication.willEnterForegroundNotification,
             object: nil,
             queue: .main
@@ -1873,6 +1968,8 @@ extension AudioPlayerEngine {
             let clamped = min(max(t, 0), max(duration, progressDeck.duration))
             if abs(currentTime - clamped) >= progressPublishEpsilon {
                 setCurrentTime(clamped)
+                // Debounced session write so force-quit still has a recent position.
+                schedulePersistPlaybackSession()
             }
         }
         if now - lastNowPlayingPush >= 5 {
@@ -1998,8 +2095,49 @@ extension AudioPlayerEngine {
     private func flushPersistedSettings() {
         eqPersistTask?.cancel()
         crossfadePersistTask?.cancel()
+        sessionPersistTask?.cancel()
         persistEQNow()
         persistCrossfadeNow()
+        persistPlaybackSessionNow()
+    }
+
+    private func schedulePersistPlaybackSession() {
+        sessionPersistTask?.cancel()
+        sessionPersistTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 700_000_000)
+            guard let self, !Task.isCancelled else { return }
+            self.persistPlaybackSessionNow()
+        }
+    }
+
+    private func persistPlaybackSessionNow() {
+        guard let current = currentTrack, !queue.isEmpty else {
+            // Nothing to resume.
+            if currentTrack == nil {
+                Self.clearPlaybackSessionSnapshot()
+            }
+            return
+        }
+        let idx = min(max(queueIndex, 0), queue.count - 1)
+        let snap = PlaybackSessionSnapshot(
+            queue: queue.map { .init(track: $0) },
+            queueIndex: idx,
+            positionSeconds: currentTime,
+            originalQueue: originalQueue.map { .init(track: $0) },
+            version: 1
+        )
+        if let data = try? JSONEncoder().encode(snap) {
+            UserDefaults.standard.set(data, forKey: Self.sessionDefaultsKey)
+        }
+    }
+
+    private static func loadPlaybackSessionSnapshot() -> PlaybackSessionSnapshot? {
+        guard let data = UserDefaults.standard.data(forKey: sessionDefaultsKey) else { return nil }
+        return try? JSONDecoder().decode(PlaybackSessionSnapshot.self, from: data)
+    }
+
+    private static func clearPlaybackSessionSnapshot() {
+        UserDefaults.standard.removeObject(forKey: sessionDefaultsKey)
     }
 
     private func persistEQNow() {
@@ -2061,4 +2199,33 @@ extension AudioPlayerEngine {
         }
         securityScopedURLs.removeAll()
     }
+}
+
+// MARK: - Lightweight session snapshot (no artwork blobs)
+
+private struct PlaybackSessionSnapshot: Codable {
+    struct TrackRef: Codable {
+        var id: UUID
+        var fileKey: String?
+        var title: String
+        var artist: String
+        var album: String
+        var duration: TimeInterval
+
+        init(track: Track) {
+            id = track.id
+            fileKey = track.fileKey
+            title = track.title
+            artist = track.artist
+            album = track.album
+            duration = track.duration
+        }
+    }
+
+    var queue: [TrackRef]
+    var queueIndex: Int
+    /// Position on the playable timeline (0…duration after silence trim).
+    var positionSeconds: TimeInterval
+    var originalQueue: [TrackRef]
+    var version: Int
 }
