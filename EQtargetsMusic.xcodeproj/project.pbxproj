@@ -134,7 +134,7 @@
 /* Begin PBXResourcesBuildPhase section */
 		000000000000000000001020 /* Resources */ = {
 			isa = PBXResourcesBuildPhase; buildActionMask = 2147483647;
-			files = (00000000000000000000101A /* Assets.xcassets in Resources */,);
+			files = (00000000000000000000101A /* Assets.xcassets in Resources */, 00000000000000000000104E /* GoogleSansFlex.ttf in Resources */,);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
