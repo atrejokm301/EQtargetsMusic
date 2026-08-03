@@ -1,0 +1,504 @@
+//
+//  NowPlayingView.swift
+//  EQtargetsMusic
+//
+
+import SwiftUI
+import UniformTypeIdentifiers
+
+struct NowPlayingView: View {
+    @EnvironmentObject private var player: AudioPlayerEngine
+    @EnvironmentObject private var presetStore: EQPresetStore
+    @Environment(\.grokTheme) private var theme
+    @Environment(\.colorScheme) private var scheme
+
+    @State private var showImporter = false
+    @State private var showSystemWideInfo = false
+    @State private var showAutoMixSheet = false
+    @State private var isScrubbing = false
+    @State private var scrubTime: TimeInterval = 0
+    /// Local progress — does not force library tabs to rebuild on every tick.
+    @State private var displayTime: TimeInterval = 0
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 20) {
+                systemWideBanner
+
+                // Hero: artwork left + title stack
+                HStack(alignment: .center, spacing: 16) {
+                    artwork
+                        .frame(width: 120, height: 120)
+                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        .shadow(color: .black.opacity(0.35), radius: 16, y: 8)
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(player.currentTrack?.title ?? "Nothing Playing")
+                            .font(.system(size: 22, weight: .bold, design: .rounded))
+                            .foregroundStyle(theme.primaryText)
+                            .lineLimit(2)
+                        Text(player.currentTrack?.artist ?? "Select a track from Music")
+                            .font(.system(size: 15, weight: .medium, design: .rounded))
+                            .foregroundStyle(theme.secondaryText)
+                            .lineLimit(1)
+                        Text(player.currentTrack?.album ?? "")
+                            .font(.system(size: 13, weight: .regular, design: .rounded))
+                            .foregroundStyle(theme.tertiaryText)
+                            .lineLimit(1)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(16)
+                .glassCard(corner: 20)
+                .contentShape(Rectangle())
+                .gesture(
+                    DragGesture(minimumDistance: 30, coordinateSpace: .local)
+                        .onEnded { value in
+                            if value.translation.width < -50 {
+                                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                                player.skipForward()
+                            } else if value.translation.width > 50 {
+                                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                                player.skipBackward()
+                            }
+                        }
+                )
+
+                // Transport
+                VStack(spacing: 12) {
+                    // Scrubbing bar + time labels (system Slider pill)
+                    VStack(spacing: 8) {
+                        Slider(
+                            value: Binding(
+                                get: { isScrubbing ? scrubTime : displayTime },
+                                set: { scrubTime = $0 }
+                            ),
+                            in: 0 ... max(player.duration, 0.001),
+                            onEditingChanged: { editing in
+                                if editing {
+                                    if !isScrubbing {
+                                        scrubTime = displayTime
+                                    }
+                                    isScrubbing = true
+                                } else {
+                                    let target = scrubTime
+                                    player.seek(to: target)
+                                    displayTime = target
+                                    scrubTime = target
+                                    isScrubbing = false
+                                }
+                            }
+                        )
+                        .tint(theme.accent)
+                        .disabled(player.currentTrack == nil || player.duration <= 0)
+                        .transaction { $0.animation = nil }
+                        .animation(nil, value: isScrubbing)
+                        .animation(nil, value: displayTime)
+
+                        HStack {
+                            Text(formatTime(isScrubbing ? scrubTime : displayTime))
+                            Spacer()
+                            Text(formatTime(player.duration))
+                        }
+                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                        .foregroundStyle(theme.tertiaryText)
+                        .transaction { $0.animation = nil }
+                    }
+
+                    HStack(spacing: 24) {
+                        // Shuffle button (cycles Off -> Standard -> Banger)
+                        Button {
+                            player.cycleShuffleMode()
+                        } label: {
+                            Image(systemName: player.shuffleMode.iconName)
+                                .font(.system(size: 20, weight: .semibold))
+                                .foregroundStyle(player.shuffleMode == .off ? theme.tertiaryText : theme.accent)
+                                .symbolVariant(player.shuffleMode == .banger ? .fill : .none)
+                        }
+                        .frame(minWidth: 44, minHeight: 44)
+                        .accessibilityLabel("Shuffle \(player.shuffleMode.rawValue)")
+
+                        Button { player.skipBackward() } label: {
+                            Image(systemName: "backward.fill")
+                                .font(.system(size: 24))
+                        }
+                        .frame(minWidth: 44, minHeight: 44)
+
+                        Button { player.togglePlayPause() } label: {
+                            Image(systemName: player.isPlaying ? "pause.circle.fill" : "play.circle.fill")
+                                .font(.system(size: 60))
+                                .symbolRenderingMode(.hierarchical)
+                                .foregroundStyle(theme.accent)
+                        }
+                        .frame(minWidth: 60, minHeight: 60)
+
+                        Button { player.skipForward() } label: {
+                            Image(systemName: "forward.fill")
+                                .font(.system(size: 24))
+                        }
+                        .frame(minWidth: 44, minHeight: 44)
+
+                        // Repeat button (cycles Off -> Repeat All -> Repeat One)
+                        Button {
+                            player.cycleRepeatMode()
+                        } label: {
+                            Image(systemName: player.repeatMode.iconName)
+                                .font(.system(size: 20, weight: .semibold))
+                                .foregroundStyle(player.repeatMode == .off ? theme.tertiaryText : theme.accent)
+                                .opacity(player.repeatMode == .off ? 0.55 : 1)
+                        }
+                        .frame(minWidth: 44, minHeight: 44)
+                        .accessibilityLabel("Repeat \(player.repeatMode.rawValue)")
+                    }
+                    .foregroundStyle(theme.primaryText)
+                }
+                .padding(16)
+                .glassCard(corner: 20)
+
+                // EQ section at bottom
+                EQControlsView(
+                    dual: $player.dual,
+                    onImportAutoEQ: { showImporter = true }
+                )
+                .padding(16)
+                .glassCard(corner: 20)
+            }
+            .padding(16)
+            .padding(.bottom, 24)
+        }
+        .scrollIndicators(.visible)
+        .background { LiquidGlassBackground() }
+        .navigationTitle("Now Playing")
+        .navigationBarTitleDisplayMode(.inline)
+        .onAppear {
+            displayTime = player.currentTime
+        }
+        .onChange(of: player.currentTrack?.id) { _ in
+            displayTime = player.currentTime
+        }
+        .onReceive(player.progressSubject) { t in
+            guard !isScrubbing else { return }
+            displayTime = t
+        }
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    showAutoMixSheet = true
+                } label: {
+                    Image(systemName: "shuffle.circle")
+                        .font(.system(size: 16, weight: .bold))
+                        .foregroundStyle(player.crossfade.isEnabled ? theme.accent : theme.secondaryText)
+                        .accessibilityLabel("Crossfade settings")
+                }
+            }
+        }
+        .sheet(isPresented: $showAutoMixSheet) {
+            AutoMixSettingsSheet()
+                .environmentObject(player)
+                .environment(\.grokTheme, theme)
+        }
+        .fileImporter(
+            isPresented: $showImporter,
+            allowedContentTypes: [.plainText, .utf8PlainText, .text],
+            allowsMultipleSelection: false
+        ) { result in
+            handleImport(result)
+        }
+        .alert("System-wide EQ on iOS", isPresented: $showSystemWideInfo) {
+            Button("Got it", role: .cancel) {}
+        } message: {
+            Text("Apple does not allow third-party apps to equalize YouTube, Music, Netflix, or other apps. EQtargets Music applies Target + Fine-Tune only to audio played inside this app.")
+        }
+        // Toast is rendered globally from RootTabView so library actions are visible too.
+    }
+
+    private var systemWideBanner: some View {
+        Button {
+            showSystemWideInfo = true
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: "info.circle.fill")
+                    .foregroundStyle(theme.accent)
+                Text("EQ applies to in-app playback only (not system-wide)")
+                    .font(.system(size: 12, weight: .medium, design: .rounded))
+                    .foregroundStyle(theme.secondaryText)
+                    .multilineTextAlignment(.leading)
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(theme.tertiaryText)
+            }
+            .padding(12)
+            .glassCard(corner: 14)
+        }
+        .buttonStyle(.plain)
+    }
+
+    @ViewBuilder
+    private var artwork: some View {
+        if let data = player.currentTrack?.artworkData, let img = UIImage(data: data) {
+            Image(uiImage: img)
+                .resizable()
+                .scaledToFill()
+        } else {
+            ZStack {
+                LinearGradient(
+                    colors: [theme.accent.opacity(0.4), theme.accentSecondary.opacity(0.3)],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+                Image(systemName: "music.note")
+                    .font(.system(size: 36, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.9))
+            }
+        }
+    }
+
+    private func handleImport(_ result: Result<[URL], Error>) {
+        switch result {
+        case .failure(let err):
+            player.toast = err.localizedDescription
+        case .success(let urls):
+            guard let url = urls.first else { return }
+            let access = url.startAccessingSecurityScopedResource()
+            defer { if access { url.stopAccessingSecurityScopedResource() } }
+            do {
+                let text = try String(contentsOf: url, encoding: .utf8)
+                let layer = try AutoEQParser.parse(text: text)
+                player.dual.loadTarget(layer, keepFineTune: true)
+                // Save into the shared store so the Target menu updates immediately.
+                let baseName = url.deletingPathExtension().lastPathComponent
+                let name = baseName.isEmpty ? "Imported Target" : baseName
+                presetStore.saveTargetPreset(name: name, layer: layer)
+                player.toast = "Target “\(name)” loaded"
+            } catch {
+                player.toast = error.localizedDescription
+            }
+        }
+    }
+
+    private func formatTime(_ t: TimeInterval) -> String {
+        guard t.isFinite, t >= 0 else { return "0:00" }
+        let m = Int(t) / 60
+        let s = Int(t) % 60
+        return String(format: "%d:%02d", m, s)
+    }
+}
+
+/// Minimal Crossfade settings — not beat-matched AutoMix.
+struct AutoMixSettingsSheet: View {
+    @EnvironmentObject private var player: AudioPlayerEngine
+    @Environment(\.grokTheme) private var theme
+    @Environment(\.dismiss) private var dismiss
+
+    private let choices = CrossfadeSettings.choices
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Crossfade")
+                            .font(.system(size: 18, weight: .bold, design: .rounded))
+                            .foregroundStyle(theme.primaryText)
+                            .accessibilityAddTraits(.isHeader)
+                        Text("Plays the end of the current song and the start of the next song at the same time, blending volumes. Works on Next and when a song ends on its own. Not beat-matched DJ AutoMix (no tempo warp).")
+                            .font(.system(size: 14, weight: .medium, design: .rounded))
+                            .foregroundStyle(theme.secondaryText)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .padding(14)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .glassCard(corner: 16)
+
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Duration")
+                            .font(.system(size: 14, weight: .semibold, design: .rounded))
+                            .foregroundStyle(theme.primaryText)
+                        Text("How long both songs overlap. Off = hard cut. On long tracks, 15–30s+ is honored (up to ~75% of the current song). Short tracks still auto-cap so the song isn’t only fade.")
+                            .font(.system(size: 12, weight: .medium, design: .rounded))
+                            .foregroundStyle(theme.secondaryText)
+                            .fixedSize(horizontal: false, vertical: true)
+
+                        // Off + up to 60s (preset grid; engine also caps vs track length)
+                        LazyVGrid(
+                            columns: [GridItem(.adaptive(minimum: 52), spacing: 8)],
+                            spacing: 8
+                        ) {
+                            ForEach(choices, id: \.self) { seconds in
+                                let selected = player.crossfade.durationSeconds == seconds
+                                Button {
+                                    player.crossfade = player.crossfade.withDurationSeconds(seconds)
+                                } label: {
+                                    Text(seconds == 0 ? "Off" : "\(seconds)s")
+                                        .font(.system(size: 14, weight: .bold, design: .rounded))
+                                        .frame(maxWidth: .infinity)
+                                        .padding(.vertical, 10)
+                                        .foregroundStyle(selected ? Color.white : theme.primaryText)
+                                        .background(
+                                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                                .fill(selected ? theme.accent : theme.elevated)
+                                        )
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel(seconds == 0 ? "Crossfade off" : "Crossfade \(seconds) seconds")
+                                .accessibilityAddTraits(selected ? .isSelected : [])
+                            }
+                        }
+                    }
+                    .padding(14)
+                    .glassCard(corner: 16)
+
+                    // Curve + adaptive (volume crossfade only — not beat-match)
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Blend curve")
+                            .font(.system(size: 14, weight: .semibold, design: .rounded))
+                            .foregroundStyle(theme.primaryText)
+                        Text("Shape of the volume swap while both tracks play.")
+                            .font(.system(size: 12, weight: .medium, design: .rounded))
+                            .foregroundStyle(theme.secondaryText)
+
+                        HStack(spacing: 8) {
+                            ForEach(CrossfadeCurve.allCases) { curve in
+                                let selected = player.crossfade.curve == curve
+                                Button {
+                                    var s = player.crossfade
+                                    s.curve = curve
+                                    player.crossfade = s
+                                } label: {
+                                    Text(curve.title)
+                                        .font(.system(size: 13, weight: .bold, design: .rounded))
+                                        .frame(maxWidth: .infinity)
+                                        .padding(.vertical, 10)
+                                        .foregroundStyle(selected ? Color.white : theme.primaryText)
+                                        .background(
+                                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                                .fill(selected ? theme.accent : theme.elevated)
+                                        )
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel("Fade curve \(curve.title)")
+                                .accessibilityAddTraits(selected ? .isSelected : [])
+                            }
+                        }
+
+                        VStack(alignment: .leading, spacing: 6) {
+                            curveHelpRow(title: "Equal Power", body: "Default. Constant loudness through the middle of the blend (cos/sin). Best everyday choice.")
+                            curveHelpRow(title: "Smooth", body: "Softer start and end of the fade. Nice on long overlaps (15–60s). Auto-used for long Equal Power fades.")
+                            curveHelpRow(title: "Linear", body: "Straight volume swap. Can sound slightly quieter in the middle. Useful to compare curves.")
+                        }
+
+                        Toggle(isOn: Binding(
+                            get: { player.crossfade.adaptiveBPM },
+                            set: { on in
+                                var s = player.crossfade
+                                s.adaptiveBPM = on
+                                player.crossfade = s
+                            }
+                        )) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Smart tempo blend")
+                                    .font(.system(size: 14, weight: .semibold, design: .rounded))
+                                    .foregroundStyle(theme.primaryText)
+                                Text("Shortens the blend when energy clashes (e.g. Adoración → Júbilo) or felt BPMs are far apart. Uses tempo lanes, not half/double tricks. Off = always use the Duration you set (still track-length capped).")
+                                    .font(.system(size: 12, weight: .medium, design: .rounded))
+                                    .foregroundStyle(theme.secondaryText)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                        .tint(theme.accent)
+
+                        Toggle(isOn: Binding(
+                            get: { player.crossfade.skipSilence },
+                            set: { on in
+                                var s = player.crossfade
+                                s.skipSilence = on
+                                player.crossfade = s
+                            }
+                        )) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Skip silence (alabanzas / live)")
+                                    .font(.system(size: 14, weight: .semibold, design: .rounded))
+                                    .foregroundStyle(theme.primaryText)
+                                Text("v2: adaptive noise floor finds where music really starts/ends. Skips long intros (talking, room tone) and trims trailing applause only when there’s real quiet at the end — ideal for live worship. Crossfade arms on the trimmed end.")
+                                    .font(.system(size: 12, weight: .medium, design: .rounded))
+                                    .foregroundStyle(theme.secondaryText)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                        .tint(theme.accent)
+                    }
+                    .padding(14)
+                    .glassCard(corner: 16)
+
+                    // Smart BPM Shuffle — queue selection only (does not change crossfade audio).
+                    SmartBPMShuffleSettingsCard()
+
+                    Text("Two independent EQ decks keep Target + Fine-Tune correct while songs overlap. No time-stretch — both tracks play at real speed. Caps: ~75% of current playable length, ~70% of next, and never longer than time left if you skip late.")
+                        .font(.system(size: 12, weight: .medium, design: .rounded))
+                        .foregroundStyle(theme.tertiaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, 4)
+                }
+                .padding(16)
+            }
+            .background { LiquidGlassBackground() }
+            .navigationTitle("Crossfade")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                        .font(.system(size: 15, weight: .bold, design: .rounded))
+                        .accessibilityLabel("Done")
+                }
+            }
+        }
+    }
+
+    private func curveHelpRow(title: String, body: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+                .font(.system(size: 12, weight: .bold, design: .rounded))
+                .foregroundStyle(theme.primaryText)
+            Text(body)
+                .font(.system(size: 11, weight: .medium, design: .rounded))
+                .foregroundStyle(theme.tertiaryText)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+}
+
+/// Toggle + copy for Smart BPM Shuffle (selection only; no audio-graph control).
+private struct SmartBPMShuffleSettingsCard: View {
+    @Environment(\.grokTheme) private var theme
+    @AppStorage(SmartShuffleSelector.enabledDefaultsKey) private var smartBPMShuffleEnabled = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Smart Tempo Up Next")
+                .font(.system(size: 14, weight: .semibold, design: .rounded))
+                .foregroundStyle(theme.primaryText)
+
+            Toggle(isOn: $smartBPMShuffleEnabled) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Keep the same worship energy")
+                        .font(.system(size: 14, weight: .semibold, design: .rounded))
+                        .foregroundStyle(theme.primaryText)
+                    Text("When Up Next is empty, picks one library track in the same tempo lane: Adoración (slow), Mid, or Júbilo (upbeat praise). Uses felt BPM — not half/double matching — so slow worship doesn’t jump into fast alabanza. Manual queue always wins.")
+                        .font(.system(size: 12, weight: .medium, design: .rounded))
+                        .foregroundStyle(theme.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .tint(theme.accent)
+            .accessibilityLabel("Smart Tempo Up Next")
+            .accessibilityHint("When enabled, automatically adds a same-energy next track if Up Next is empty")
+
+            if smartBPMShuffleEnabled {
+                TempoLaneThresholdsEditor()
+            }
+        }
+        .padding(14)
+        .glassCard(corner: 16)
+    }
+}
