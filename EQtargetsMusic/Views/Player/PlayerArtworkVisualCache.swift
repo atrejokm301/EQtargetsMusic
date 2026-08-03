@@ -112,6 +112,52 @@ struct PlayerArtworkVisuals: Equatable {
         guard hasArtwork, !dominantColors.isEmpty else { return [] }
         return Array(dominantColors.prefix(maxStops))
     }
+
+    /// Colors tuned for full-player atmosphere: skip near-black/white, lift saturation,
+    /// park brightness in a mid band so the room glows without looking muddy or neon.
+    func atmosphericColors(maxStops: Int = 4) -> [Color] {
+        guard hasArtwork else { return [] }
+        var out: [Color] = []
+        for c in dominantColors {
+            guard let tuned = Self.atmosphereTune(c) else { continue }
+            if out.contains(where: { Self.approxEqual($0, tuned) }) { continue }
+            out.append(tuned)
+            if out.count >= maxStops { break }
+        }
+        // Fallback: if filters ate everything, use softened first dominant.
+        if out.isEmpty, let first = dominantColors.first {
+            out = [Self.forceAtmosphere(first)]
+        }
+        return out
+    }
+
+    private static func atmosphereTune(_ color: Color) -> Color? {
+        let ui = UIColor(color)
+        var h: CGFloat = 0, s: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        guard ui.getHue(&h, saturation: &s, brightness: &b, alpha: &a) else { return nil }
+        // Skip neutrals / ink / paper — they make the background feel dead.
+        if s < 0.10, b < 0.22 { return nil }
+        if s < 0.08, b > 0.88 { return nil }
+        if b < 0.08 { return nil }
+        // Aesthetic mid-room: rich but not fluorescent.
+        let sat = min(0.78, max(0.28, s * 1.18))
+        let bri = min(0.62, max(0.28, b * 0.92))
+        return Color(UIColor(hue: h, saturation: sat, brightness: bri, alpha: 1))
+    }
+
+    private static func forceAtmosphere(_ color: Color) -> Color {
+        atmosphereTune(color) ?? color.opacity(0.85)
+    }
+
+    private static func approxEqual(_ a: Color, _ b: Color) -> Bool {
+        let ua = UIColor(a), ub = UIColor(b)
+        var r1: CGFloat = 0, g1: CGFloat = 0, b1: CGFloat = 0, a1: CGFloat = 0
+        var r2: CGFloat = 0, g2: CGFloat = 0, b2: CGFloat = 0, a2: CGFloat = 0
+        ua.getRed(&r1, green: &g1, blue: &b1, alpha: &a1)
+        ub.getRed(&r2, green: &g2, blue: &b2, alpha: &a2)
+        let dr = Double(r1 - r2), dg = Double(g1 - g2), db = Double(b1 - b2)
+        return (dr * dr + dg * dg + db * db) < 0.012
+    }
 }
 
 // MARK: - Cache

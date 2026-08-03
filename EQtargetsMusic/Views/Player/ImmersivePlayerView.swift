@@ -361,137 +361,129 @@ struct ImmersivePlayerView: View {
         }
     }
 
-    /// Album colors softly filling the room — not a charcoal slab.
-    /// A base → multi-color glows → optional light frost → bottom-only readability.
+    /// Full-player room: queue-style glass + tuned album blooms (no muddy plusLighter soup).
     private var playerDynamicBackground: some View {
-        let hasArt = artworkVisuals.hasArtwork && !artworkVisuals.dominantColors.isEmpty
-        let c = artworkVisuals.gradientStops(maxStops: 5)
-        let c0 = c.indices.contains(0) ? c[0] : Color.clear
-        let c1 = c.indices.contains(1) ? c[1] : c0
-        let c2 = c.indices.contains(2) ? c[2] : c1
-        let c3 = c.indices.contains(3) ? c[3] : c2
-        let isDarkScheme = scheme == .dark
-        // Bias: protect lower third for white text; leave upper/mid color-rich.
-        let scrimPeak: Double = {
-            if !hasArt { return 0 }
-            if reduceTransparency { return isDarkScheme ? 0.48 : 0.32 }
-            return artworkVisuals.isDarkArtwork
-                ? (isDarkScheme ? 0.20 : 0.16)
-                : (isDarkScheme ? 0.28 : 0.22)
-        }()
-        let materialOpacity: Double = {
-            if reduceTransparency { return 0 }
-            // Very light frost — depth without killing album chroma.
-            return isDarkScheme ? 0.18 : 0.22
-        }()
+        let atmos = artworkVisuals.atmosphericColors(maxStops: 4)
+        let hasArt = artworkVisuals.hasArtwork && !atmos.isEmpty
+        let c0 = atmos.indices.contains(0) ? atmos[0] : Color.clear
+        let c1 = atmos.indices.contains(1) ? atmos[1] : c0
+        let c2 = atmos.indices.contains(2) ? atmos[2] : c1
+        let c3 = atmos.indices.contains(3) ? atmos[3] : c2
 
         return GeometryReader { geo in
             let h = geo.size.height
+            let w = geo.size.width
             ZStack {
-                // A) True near-black matte base (not gray charcoal)
+                // A) Deep black foundation (same language as queue glass)
                 Color.black
                     .ignoresSafeArea()
 
                 if hasArt {
-                    // B1) Primary atmospheric radial — largest glow behind cover / upper field
-                    RadialGradient(
-                        colors: [
-                            c0.opacity(0.95),
-                            c0.opacity(0.58),
-                            c1.opacity(0.32),
-                            Color.clear
-                        ],
-                        center: UnitPoint(x: 0.5, y: 0.26),
-                        startRadius: 24,
-                        endRadius: max(h * 0.72, 420)
-                    )
-                    .ignoresSafeArea()
-                    .scaleEffect(x: 1.2, y: 1.08, anchor: .center)
-
-                    // B2) Secondary soft bloom (second dominant hue)
-                    RadialGradient(
-                        colors: [
-                            c1.opacity(0.78),
-                            c2.opacity(0.30),
-                            Color.clear
-                        ],
-                        center: UnitPoint(x: 0.08, y: 0.52),
-                        startRadius: 12,
-                        endRadius: max(h * 0.55, 320)
-                    )
-                    .ignoresSafeArea()
-                    .blendMode(.plusLighter)
-
-                    // B3) Tertiary bloom (third/fourth hue — multi-color covers stay alive)
-                    RadialGradient(
-                        colors: [
-                            c2.opacity(0.62),
-                            c3.opacity(0.22),
-                            Color.clear
-                        ],
-                        center: UnitPoint(x: 0.94, y: 0.18),
-                        startRadius: 10,
-                        endRadius: max(h * 0.48, 280)
-                    )
-                    .ignoresSafeArea()
-                    .blendMode(.plusLighter)
-
-                    // B4) Soft multi-stop wash — distinct real hues as stops
+                    // B1) Soft vertical wash — primary → secondary → black
                     LinearGradient(
-                        colors: gradientColorList(c).map { $0.opacity(0.78) },
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
+                        colors: [
+                            c0.opacity(0.72),
+                            c1.opacity(0.42),
+                            c2.opacity(0.22),
+                            Color.black.opacity(0.92)
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
                     )
                     .ignoresSafeArea()
-                    .blendMode(.plusLighter)
-                    .opacity(0.55)
 
-                    // C) Very light frost only — do NOT charcoal the room
+                    // B2) Cover-centered bloom (behind hero art)
+                    RadialGradient(
+                        colors: [
+                            c0.opacity(0.88),
+                            c1.opacity(0.40),
+                            Color.clear
+                        ],
+                        center: UnitPoint(x: 0.5, y: 0.30),
+                        startRadius: 20,
+                        endRadius: max(h * 0.58, 340)
+                    )
+                    .ignoresSafeArea()
+                    .scaleEffect(x: 1.15, y: 1.0, anchor: .center)
+
+                    // B3) Corner accents — second / third hues, soft (no harsh plusLighter)
+                    RadialGradient(
+                        colors: [c2.opacity(0.55), Color.clear],
+                        center: UnitPoint(x: 0.05, y: 0.62),
+                        startRadius: 8,
+                        endRadius: max(w * 0.75, 260)
+                    )
+                    .ignoresSafeArea()
+
+                    RadialGradient(
+                        colors: [c3.opacity(0.48), Color.clear],
+                        center: UnitPoint(x: 0.95, y: 0.16),
+                        startRadius: 6,
+                        endRadius: max(w * 0.65, 240)
+                    )
+                    .ignoresSafeArea()
+
+                    // C) Queue-like frost — depth without killing color
                     if reduceTransparency {
-                        Color.black.opacity(isDarkScheme ? 0.26 : 0.12)
+                        Color.black.opacity(0.38)
                             .ignoresSafeArea()
-                    } else if materialOpacity > 0 {
+                    } else {
                         Rectangle()
                             .fill(.ultraThinMaterial)
-                            .opacity(materialOpacity)
+                            .opacity(0.38)
+                            .ignoresSafeArea()
+                        // Extra dark veil so white type always reads
+                        Color.black.opacity(0.18)
                             .ignoresSafeArea()
                     }
 
-                    // D) Lower-third readability only — upper/mid stays color-rich
+                    // D) Top sheen
+                    VStack(spacing: 0) {
+                        LinearGradient(
+                            colors: [
+                                Color.white.opacity(0.07),
+                                Color.clear
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                        .frame(height: 56)
+                        Spacer(minLength: 0)
+                    }
+                    .ignoresSafeArea()
+                    .allowsHitTesting(false)
+
+                    // E) Bottom readability gradient (transport / actions)
                     VStack(spacing: 0) {
                         Spacer(minLength: 0)
                         LinearGradient(
                             colors: [
                                 Color.clear,
-                                Color.black.opacity(scrimPeak * 0.28),
-                                Color.black.opacity(scrimPeak * 0.70),
-                                Color.black.opacity(scrimPeak)
+                                Color.black.opacity(0.25),
+                                Color.black.opacity(0.62),
+                                Color.black.opacity(0.82)
                             ],
                             startPoint: .top,
                             endPoint: .bottom
                         )
-                        .frame(height: h * 0.36)
+                        .frame(height: h * 0.42)
                     }
                     .ignoresSafeArea()
                     .allowsHitTesting(false)
+                } else {
+                    // No art: subtle accent breath so pure black isn't flat empty
+                    RadialGradient(
+                        colors: [
+                            theme.accent.opacity(0.16),
+                            Color.clear
+                        ],
+                        center: UnitPoint(x: 0.5, y: 0.28),
+                        startRadius: 10,
+                        endRadius: max(h * 0.5, 300)
+                    )
+                    .ignoresSafeArea()
                 }
             }
-        }
-    }
-
-    /// Expand 1–N real colors into smooth gradient stops (preserve each hue).
-    private func gradientColorList(_ stops: [Color]) -> [Color] {
-        switch stops.count {
-        case 0:
-            return [.black]
-        case 1:
-            return [stops[0], stops[0].opacity(0.9), stops[0].opacity(0.7)]
-        case 2:
-            return [stops[0], stops[1], stops[1].opacity(0.85)]
-        case 3:
-            return [stops[0], stops[1], stops[2], stops[2].opacity(0.9)]
-        default:
-            return Array(stops.prefix(5))
         }
     }
 
