@@ -136,12 +136,12 @@ struct PlayerArtworkVisuals: Equatable {
         var h: CGFloat = 0, s: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
         guard ui.getHue(&h, saturation: &s, brightness: &b, alpha: &a) else { return nil }
         // Skip neutrals / ink / paper — they make the background feel dead.
-        if s < 0.10, b < 0.22 { return nil }
-        if s < 0.08, b > 0.88 { return nil }
-        if b < 0.08 { return nil }
-        // Aesthetic mid-room: rich but not fluorescent.
-        let sat = min(0.78, max(0.28, s * 1.18))
-        let bri = min(0.62, max(0.28, b * 0.92))
+        if s < 0.08, b < 0.18 { return nil }
+        if s < 0.07, b > 0.90 { return nil }
+        if b < 0.06 { return nil }
+        // Keep cover hue; mild sat lift, readable mid brightness on OLED black.
+        let sat = min(0.86, max(0.32, s * 1.22))
+        let bri = min(0.68, max(0.30, b * 0.95))
         return Color(UIColor(hue: h, saturation: sat, brightness: bri, alpha: 1))
     }
 
@@ -166,12 +166,21 @@ enum PlayerArtworkVisualCache {
     private static let lock = NSLock()
     private static var paletteCache: [UUID: ArtworkPalette] = [:]
     private static let maxEntries = 64
-    private static let clusterCount = 5
-    private static let downsampleSide: CGFloat = 56
-    private static let kMeansIterations = 10
+    private static let clusterCount = 6
+    private static let downsampleSide: CGFloat = 72
+    private static let kMeansIterations = 12
+
+    /// Bump when extraction logic changes so in-session cache can be cleared if needed.
+    private static let extractVersion = 2
 
     static func prewarm(track: Track, accent: Color) {
         _ = visuals(for: track, accent: accent)
+    }
+
+    static func clearCache() {
+        lock.lock()
+        paletteCache.removeAll(keepingCapacity: true)
+        lock.unlock()
     }
 
     static func visuals(for track: Track?, accent: Color) -> PlayerArtworkVisuals {
@@ -196,8 +205,14 @@ enum PlayerArtworkVisualCache {
         return palette(for: track, image: thumb)
     }
 
+    private static var loadedExtractVersion: Int = -1
+
     private static func palette(for track: Track, image: UIImage?) -> ArtworkPalette {
         lock.lock()
+        if loadedExtractVersion != extractVersion {
+            paletteCache.removeAll(keepingCapacity: true)
+            loadedExtractVersion = extractVersion
+        }
         if let hit = paletteCache[track.id] {
             lock.unlock()
             return hit
@@ -227,21 +242,21 @@ enum PlayerArtworkVisualCache {
         return built
     }
 
-    // MARK: - Dominant colors (k-means on downsample, rank by frequency)
+    // MARK: - Dominant colors (center-weighted k-means + chroma rank)
 
-    /// Returns up to 6 colors sorted by pixel frequency (most dominant first).
-    /// Colors keep source saturation/lightness — no synthetic boost/darken inventing hues.
+    /// Up to 6 cover-matching colors: frequency × saturation, white mats / pure black down-weighted.
     private static func extractDominantColors(from image: UIImage) -> [RGBAColor]? {
-        guard let pixels = rasterPixels(image, side: downsampleSide), !pixels.isEmpty else {
+        guard let samples = rasterPixelsWeighted(image, side: downsampleSide), !samples.isEmpty else {
             return nil
         }
+        let pixels = samples.map(\.rgb)
+        let weights = samples.map(\.w)
 
-        let k = min(clusterCount, max(2, pixels.count / 8))
-        var centroids = seedCentroids(from: pixels, k: k)
+        let k = min(clusterCount, max(3, pixels.count / 10))
+        var centroids = seedCentroidsKMeansPP(from: pixels, weights: weights, k: k)
         var assignments = [Int](repeating: 0, count: pixels.count)
 
         for _ in 0 ..< kMeansIterations {
-            // Assign
             for (i, p) in pixels.enumerated() {
                 var best = 0
                 var bestD = Double.greatestFiniteMagnitude
@@ -254,56 +269,75 @@ enum PlayerArtworkVisualCache {
                 }
                 assignments[i] = best
             }
-            // Update
-            var sums = Array(repeating: (r: 0.0, g: 0.0, b: 0.0, n: 0), count: k)
+            var sums = Array(repeating: (r: 0.0, g: 0.0, b: 0.0, n: 0.0), count: k)
             for (i, p) in pixels.enumerated() {
                 let a = assignments[i]
-                sums[a].r += p.r
-                sums[a].g += p.g
-                sums[a].b += p.b
-                sums[a].n += 1
+                let w = weights[i]
+                sums[a].r += p.r * w
+                sums[a].g += p.g * w
+                sums[a].b += p.b * w
+                sums[a].n += w
             }
             for ci in 0 ..< k {
-                if sums[ci].n > 0 {
-                    let n = Double(sums[ci].n)
+                if sums[ci].n > 1e-6 {
+                    let n = sums[ci].n
                     centroids[ci] = RGB(r: sums[ci].r / n, g: sums[ci].g / n, b: sums[ci].b / n)
                 }
             }
         }
 
-        // Frequency per cluster
-        var counts = [Int](repeating: 0, count: k)
-        for a in assignments { counts[a] += 1 }
+        var weightByCluster = [Double](repeating: 0, count: k)
+        for (i, a) in assignments.enumerated() {
+            weightByCluster[a] += weights[i]
+        }
 
-        var ranked: [(RGB, Int)] = []
+        // Score = mass × chroma so gray mats lose to real album hues.
+        var ranked: [(RGB, Double)] = []
         for ci in 0 ..< k {
-            guard counts[ci] > 0 else { continue }
-            ranked.append((centroids[ci], counts[ci]))
+            guard weightByCluster[ci] > 0 else { continue }
+            let c = centroids[ci]
+            let chroma = max(c.r, c.g, c.b) - min(c.r, c.g, c.b)
+            let sat = chroma / max(max(c.r, c.g, c.b), 1e-6)
+            let score = weightByCluster[ci] * (0.35 + sat * 1.4)
+            ranked.append((c, score))
         }
         ranked.sort { $0.1 > $1.1 }
 
-        // Merge near-duplicates; keep distinct real colors. Soften only extreme brights.
         var result: [RGBAColor] = []
         for (rgb, _) in ranked {
-            let color = softCapBrightness(RGBAColor(red: rgb.r, green: rgb.g, blue: rgb.b))
-            if result.contains(where: { colorDistance($0, color) < 0.07 }) { continue }
+            var color = softEnhanceForUI(RGBAColor(red: rgb.r, green: rgb.g, blue: rgb.b))
+            // Skip pure ink / paper mats after ranking (unless nothing else).
+            if isMatteNeutral(color), result.count >= 1 { continue }
+            if result.contains(where: { colorDistance($0, color) < 0.06 }) { continue }
             result.append(color)
             if result.count >= 6 { break }
         }
+        if result.isEmpty, let first = ranked.first {
+            result = [softEnhanceForUI(RGBAColor(red: first.0.r, green: first.0.g, blue: first.0.b))]
+        }
+        _ = extractVersion
         return result.isEmpty ? nil : result
     }
 
-    /// Soften only extreme highlights for readability — keep hue & most saturation.
-    private static func softCapBrightness(_ c: RGBAColor) -> RGBAColor {
+    private static func isMatteNeutral(_ c: RGBAColor) -> Bool {
+        let mx = max(c.red, c.green, c.blue)
+        let mn = min(c.red, c.green, c.blue)
+        let chroma = mx - mn
+        if chroma < 0.06, mx > 0.88 { return true } // white mat
+        if chroma < 0.05, mx < 0.12 { return true } // pure black
+        return false
+    }
+
+    /// Mild sat lift + soft highlight pull — keeps cover hue, better glow on OLED.
+    private static func softEnhanceForUI(_ c: RGBAColor) -> RGBAColor {
         let ui = UIColor(red: c.red, green: c.green, blue: c.blue, alpha: 1)
         var h: CGFloat = 0, s: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
         guard ui.getHue(&h, saturation: &s, brightness: &b, alpha: &a) else { return c }
-        // Only pull down near-white glare; do not invent new hues or desaturate.
-        if b > 0.92 {
-            let capped = UIColor(hue: h, saturation: s, brightness: 0.88, alpha: 1)
-            return RGBAColor(capped)
-        }
-        return c
+        var sat = s
+        var bri = b
+        if b > 0.90 { bri = 0.86 }
+        if s > 0.12, s < 0.85 { sat = min(0.92, s * 1.12) }
+        return RGBAColor(UIColor(hue: h, saturation: sat, brightness: bri, alpha: 1))
     }
 
     private struct RGB {
@@ -312,42 +346,109 @@ enum PlayerArtworkVisualCache {
         var b: Double
     }
 
-    private static func rasterPixels(_ image: UIImage, side: CGFloat) -> [RGB]? {
-        let size = CGSize(width: side, height: side)
-        let format = UIGraphicsImageRendererFormat.default()
-        format.scale = 1
-        format.opaque = true
-        let tiny = UIGraphicsImageRenderer(size: size, format: format).image { ctx in
-            UIColor.black.setFill()
-            ctx.fill(CGRect(origin: .zero, size: size))
-            image.draw(in: CGRect(origin: .zero, size: size))
-        }
-        guard let cg = tiny.cgImage,
-              let data = cg.dataProvider?.data,
-              let ptr = CFDataGetBytePtr(data) else { return nil }
+    private struct WeightedRGB {
+        var rgb: RGB
+        var w: Double
+    }
 
-        let length = CFDataGetLength(data)
-        let bpp = max(cg.bitsPerPixel / 8, 1)
-        var out: [RGB] = []
-        out.reserveCapacity(Int(side * side))
-        var i = 0
-        while i + 2 < length {
-            let r = Double(ptr[i]) / 255
-            let g = Double(ptr[i + 1]) / 255
-            let b = Double(ptr[i + 2]) / 255
-            // Keep nearly all pixels — even near-black/white if they dominate the art.
-            out.append(RGB(r: r, g: g, b: b))
-            i += bpp
+    /// DeviceRGB RGBA buffer (fixes BGRA R↔B swaps) + center weighting + mat filter.
+    private static func rasterPixelsWeighted(_ image: UIImage, side: CGFloat) -> [WeightedRGB]? {
+        let w = Int(side)
+        let h = Int(side)
+        let bytesPerPixel = 4
+        let bytesPerRow = w * bytesPerPixel
+        var data = [UInt8](repeating: 0, count: w * h * bytesPerPixel)
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        guard let ctx = CGContext(
+            data: &data,
+            width: w,
+            height: h,
+            bitsPerComponent: 8,
+            bytesPerRow: bytesPerRow,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue
+        ) else { return nil }
+
+        ctx.interpolationQuality = .high
+        ctx.setFillColor(UIColor.black.cgColor)
+        ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
+        // Draw UIImage oriented correctly
+        UIGraphicsPushContext(ctx)
+        image.draw(in: CGRect(x: 0, y: 0, width: w, height: h))
+        UIGraphicsPopContext()
+
+        let cx = Double(w - 1) / 2
+        let cy = Double(h - 1) / 2
+        let maxDist = sqrt(cx * cx + cy * cy)
+
+        var out: [WeightedRGB] = []
+        out.reserveCapacity(w * h)
+        for y in 0 ..< h {
+            for x in 0 ..< w {
+                let i = (y * w + x) * 4
+                let r = Double(data[i]) / 255
+                let g = Double(data[i + 1]) / 255
+                let b = Double(data[i + 2]) / 255
+                let mx = max(r, g, b)
+                let mn = min(r, g, b)
+                let chroma = mx - mn
+
+                // Drop pure white borders / pure black letterbox (common on square art).
+                var wgt = 1.0
+                if chroma < 0.05, mx > 0.92 { wgt = 0.08 } // white mat
+                else if chroma < 0.04, mx < 0.08 { wgt = 0.12 } // black bars
+                else if chroma < 0.06 { wgt = 0.35 } // gray
+
+                // Center-weighted: subject usually in middle of cover.
+                let dx = Double(x) - cx
+                let dy = Double(y) - cy
+                let t = 1.0 - min(1.0, sqrt(dx * dx + dy * dy) / maxDist)
+                wgt *= 0.45 + 0.55 * t * t
+
+                // Slight boost for colorful pixels so k-means cares about album ink.
+                wgt *= 0.55 + chroma * 1.2
+
+                out.append(WeightedRGB(rgb: RGB(r: r, g: g, b: b), w: max(wgt, 0.02)))
+            }
         }
         return out
     }
 
-    private static func seedCentroids(from pixels: [RGB], k: Int) -> [RGB] {
-        // Spread seeds across the pixel list for stable k-means++-lite init.
+    private static func seedCentroidsKMeansPP(from pixels: [RGB], weights: [Double], k: Int) -> [RGB] {
+        guard !pixels.isEmpty else { return [] }
         var centroids: [RGB] = []
-        let step = max(pixels.count / k, 1)
-        for i in 0 ..< k {
-            centroids.append(pixels[min(i * step, pixels.count - 1)])
+        // First seed: highest weight sample
+        var bestI = 0
+        var bestW = -1.0
+        for i in pixels.indices where weights[i] > bestW {
+            bestW = weights[i]
+            bestI = i
+        }
+        centroids.append(pixels[bestI])
+
+        while centroids.count < k {
+            var distSum = 0.0
+            var dists = [Double](repeating: 0, count: pixels.count)
+            for i in pixels.indices {
+                var minD = Double.greatestFiniteMagnitude
+                for c in centroids {
+                    minD = min(minD, dist2(pixels[i], c))
+                }
+                let d = minD * weights[i]
+                dists[i] = d
+                distSum += d
+            }
+            if distSum < 1e-12 {
+                centroids.append(pixels[pixels.count / 2])
+                continue
+            }
+            var r = Double.random(in: 0 ..< distSum)
+            var picked = pixels.count - 1
+            for i in pixels.indices {
+                r -= dists[i]
+                if r <= 0 { picked = i; break }
+            }
+            centroids.append(pixels[picked])
         }
         return centroids
     }

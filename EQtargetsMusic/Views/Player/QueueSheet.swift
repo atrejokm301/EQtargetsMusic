@@ -230,6 +230,7 @@ struct QueueSheet: View {
             }
             .listStyle(.plain)
             .scrollContentBackground(.hidden)
+            .grokScrollEdgeBlur()
             .listRowSeparator(.hidden)
             .background {
                 QueueGlassSurface(
@@ -243,38 +244,30 @@ struct QueueSheet: View {
             }
             // Edit mode only while reordering — swipe-delete needs inactive edit mode.
             .environment(\.editMode, .constant(isReordering && !upNext.isEmpty && !editsBlocked ? .active : .inactive))
-            .navigationTitle("Playing Next")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(.hidden, for: .navigationBar)
-            .toolbarColorScheme(.dark, for: .navigationBar)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
+            .grokStyleNavigationChrome(title: "Playing Next", showsMenu: false) {
+                HStack(spacing: 10) {
                     Button("Done") { dismiss() }
                         .font(.app(size: 15, weight: .bold))
                         .foregroundStyle(Color.white.opacity(0.95))
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    HStack(spacing: 14) {
-                        if !upNext.isEmpty, !editsBlocked {
-                            Button(isReordering ? "Done" : "Edit") {
-                                withAnimation(.easeInOut(duration: 0.2)) {
-                                    isReordering.toggle()
-                                }
+                    if !upNext.isEmpty, !editsBlocked {
+                        Button(isReordering ? "Done" : "Edit") {
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                isReordering.toggle()
                             }
-                            .font(.app(size: 15, weight: .semibold))
-                            .foregroundStyle(queueTheme.accent)
-                        }
-                        Button("Clear") {
-                            guard !editsBlocked else { return }
-                            isReordering = false
-                            player.clearUpNext()
                         }
                         .font(.app(size: 15, weight: .semibold))
-                        .foregroundStyle(queueTheme.danger)
-                        .opacity(upNext.isEmpty || editsBlocked ? 0.4 : 1)
-                        .allowsHitTesting(!(upNext.isEmpty || editsBlocked))
-                        .accessibilityLabel("Clear Up Next")
+                        .foregroundStyle(queueTheme.accent)
                     }
+                    Button("Clear") {
+                        guard !editsBlocked else { return }
+                        isReordering = false
+                        player.clearUpNext()
+                    }
+                    .font(.app(size: 15, weight: .semibold))
+                    .foregroundStyle(queueTheme.danger)
+                    .opacity(upNext.isEmpty || editsBlocked ? 0.4 : 1)
+                    .allowsHitTesting(!(upNext.isEmpty || editsBlocked))
+                    .accessibilityLabel("Clear Up Next")
                 }
             }
         }

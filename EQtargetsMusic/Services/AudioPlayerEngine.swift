@@ -195,7 +195,8 @@ final class AudioPlayerEngine: ObservableObject {
     private var progressTimer: Timer?
     private var crossfadeTimer: Timer?
     private var automixTimer: Timer?
-    private var sampleRate: Double = 44_100
+    /// Always 48 kHz once the graph is up — stable hardware clock; files resample in.
+    private var sampleRate: Double = 48_000
     private var graphFormat: AVAudioFormat?
     private var graphConnected = false
 
@@ -220,10 +221,15 @@ final class AudioPlayerEngine: ObservableObject {
     private var didAttemptSessionRestore = false
     private var cachedNowPlayingArtwork: MPMediaItemArtwork?
     private var cachedArtworkTrackID: UUID?
+    /// Bumps when track changes so a late high-res load cannot attach to the wrong song.
+    private var nowPlayingArtLoadToken: UInt64 = 0
     private var lastNowPlayingPush: TimeInterval = 0
-    /// Foreground UI / crossfade backup tick. Background uses a slower interval.
+    /// Foreground UI / crossfade backup tick. Background / LPM use slower intervals
+    /// (natural crossfade still fires; fewer main-runloop wakes = less battery).
     private var progressTickInterval: TimeInterval {
-        UIApplication.shared.applicationState == .background ? 1.0 : 0.75
+        if ProcessInfo.processInfo.isLowPowerModeEnabled { return 1.15 }
+        if UIApplication.shared.applicationState == .background { return 1.0 }
+        return 0.75
     }
     private let progressPublishEpsilon: TimeInterval = 0.25
 
@@ -231,6 +237,11 @@ final class AudioPlayerEngine: ObservableObject {
     private var consecutiveMissingSkips = 0
     /// Silence-skip results by file key — avoids re-scanning on every Next/Prev.
     private var silenceTrimCache: [String: SilenceTrim] = [:]
+    private let silenceTrimCacheCap = 48
+    /// Lightweight position write (not full queue JSON) — cuts flash wear / main-thread encode.
+    private static let sessionPositionKey = "eqtargets.playbackPosition"
+    private var lastPositionPersistUptime: TimeInterval = 0
+    private var lastFullSessionSignature: Int = 0
 
     init() {
         activeDeck = deckA
@@ -422,7 +433,10 @@ final class AudioPlayerEngine: ObservableObject {
         }
 
         loadAndPlay(track, autoSkipMissing: false, autoPlay: false)
-        let pos = min(max(snap.positionSeconds, 0), max(duration - 0.25, 0))
+        // Prefer lightweight position sidecar if newer than snapshot body.
+        let sidecar = UserDefaults.standard.double(forKey: Self.sessionPositionKey)
+        let rawPos = sidecar > 0.5 ? sidecar : snap.positionSeconds
+        let pos = min(max(rawPos, 0), max(duration - 0.25, 0))
         if pos > 0.5 {
             seek(to: pos)
             // seek may leave paused if wasPlaying was false
@@ -927,13 +941,7 @@ extension AudioPlayerEngine {
             return
         }
 
-        let preferred = Self.makeGraphFormat(preferring: file.processingFormat.sampleRate)
-        if let preferred, abs(preferred.sampleRate - gf.sampleRate) > 1 {
-            // Sample-rate family change — hard load rather than broken overlap.
-            loadAndPlay(nextTrack, autoSkipMissing: true)
-            return
-        }
-
+        // Graph is fixed at 48 kHz; 44.1 files convert on the incoming deck — no hard reload.
         cancelAutomixTimer()
         crossfadeTimer?.invalidate()
         crossfadeTimer = nil
@@ -1218,21 +1226,21 @@ extension AudioPlayerEngine {
             showToast("Unsupported audio format")
             return
         }
-        guard let gf = Self.makeGraphFormat(preferring: format.sampleRate) else {
+        // Graph is always 48 kHz stereo float — never hop 44.1↔48 mid-session
+        // (rate thrash + session realign is a common source of thin / “radio” artifacts).
+        guard let gf = graphFormat ?? Self.makeGraphFormat() else {
             showToast("Unsupported audio format")
             return
         }
 
-        // Reconnect only when graph format family changes (or first connect).
-        if graphFormat == nil
-            || !graphConnected
-            || abs((graphFormat?.sampleRate ?? 0) - gf.sampleRate) > 1 {
+        if !graphConnected || graphFormat == nil {
             hardStopEnginePreserveSession()
             graphFormat = gf
             sampleRate = gf.sampleRate
             connectGraph(format: gf)
+            alignSessionSampleRate(to: Self.playbackSampleRate)
         } else {
-            // Soft stop decks only — keep graph.
+            // Soft stop decks only — keep graph rate locked.
             activeDeck.player.stop()
             activeDeck.player.reset()
             inactiveDeck.silenceAndStop()
@@ -1337,14 +1345,32 @@ extension AudioPlayerEngine {
 
     // MARK: - Scheduling
 
-    private static func makeGraphFormat(preferring sampleRate: Double) -> AVAudioFormat? {
-        let rate: Double = abs(sampleRate - 48_000) < abs(sampleRate - 44_100) ? 48_000 : 44_100
-        return AVAudioFormat(
+    /// Playback clock for session + graph. 48 kHz matches modern iPhone / AirPods
+    /// hardware and avoids hopping between rates when the library is mixed 44.1/48.
+    /// Battery delta vs 44.1 is small; stability and converter quality matter more for clarity.
+    private static let playbackSampleRate: Double = 48_000
+
+    private static func makeGraphFormat() -> AVAudioFormat? {
+        AVAudioFormat(
             commonFormat: .pcmFormatFloat32,
-            sampleRate: rate,
+            sampleRate: playbackSampleRate,
             channels: 2,
             interleaved: false
         )
+    }
+
+    /// Keep AVAudioSession preferred rate locked to the graph (48 kHz).
+    private func alignSessionSampleRate(to rate: Double = playbackSampleRate) {
+        let session = AVAudioSession.sharedInstance()
+        let target = Self.playbackSampleRate
+        _ = rate // API keeps a parameter for call-site clarity
+        do {
+            try session.setPreferredSampleRate(target)
+            // Re-assert without clobbering buffer preference.
+            try session.setActive(true, options: [])
+        } catch {
+            playerLog.debug("session sampleRate align failed: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     private static func formatsCompatible(_ a: AVAudioFormat, _ b: AVAudioFormat) -> Bool {
@@ -1403,8 +1429,11 @@ extension AudioPlayerEngine {
     ) -> Bool {
         let srcFormat = file.processingFormat
         guard let converter = AVAudioConverter(from: srcFormat, to: gf) else { return false }
+        // High-quality SRC for 44.1→48 (and other rates). Cheap vs dual-EQ; avoids thin/muddy convert.
+        converter.sampleRateConverterQuality = Int(AVAudioQuality.max.rawValue)
         deck.streamFeedGeneration &+= 1
         let feedGen = deck.streamFeedGeneration
+        // ~0.25s source chunks — enough for good SRC without huge buffers.
         let chunkSrc = AVAudioFrameCount(max(srcFormat.sampleRate * 0.25, 1024))
         let cursor = StreamingCursor(startFrame)
         pushStreamingChunk(
@@ -1438,7 +1467,7 @@ extension AudioPlayerEngine {
             return hit
         }
         let trim = SilenceAnalyzer.analyzeFast(file)
-        silenceTrimCache[key] = trim
+        storeSilenceTrim(key, trim)
         playerLog.info(
             "silenceTrim(fast v2): intro=\(trim.introSkip, format: .fixed(precision: 2))s end=\(trim.effectiveEnd, format: .fixed(precision: 2))s playable=\(trim.playableDuration, format: .fixed(precision: 1))s"
         )
@@ -1463,7 +1492,7 @@ extension AudioPlayerEngine {
             guard let trim = SilenceAnalyzer.analyzeURL(url) else { return }
             await MainActor.run { [weak self] in
                 guard let self else { return }
-                self.silenceTrimCache[key] = trim
+                self.storeSilenceTrim(key, trim)
                 playerLog.info(
                     "silenceTrim(full v2): intro=\(trim.introSkip, format: .fixed(precision: 2))s end=\(trim.effectiveEnd, format: .fixed(precision: 2))s playable=\(trim.playableDuration, format: .fixed(precision: 1))s"
                 )
@@ -1660,8 +1689,8 @@ extension AudioPlayerEngine {
         deckA.attach(to: engine)
         deckB.attach(to: engine)
         _ = engine.outputNode
-        // Default connection at 44.1k stereo; first load may reconnect if 48k preferred.
-        if let gf = Self.makeGraphFormat(preferring: 44_100) {
+        // Fixed 48 kHz stereo graph from launch — stable EQ Nyquist + hardware clock.
+        if let gf = Self.makeGraphFormat() {
             graphFormat = gf
             sampleRate = gf.sampleRate
             connectGraph(format: gf)
@@ -1707,8 +1736,13 @@ extension AudioPlayerEngine {
         let session = AVAudioSession.sharedInstance()
         do {
             try session.setCategory(.playback, mode: .default, options: [])
-            try session.setPreferredIOBufferDuration(forBackground ? 0.100 : 0.050)
-            try session.setPreferredSampleRate(48_000)
+            // Quality-first when cool (~50ms); thermal/LPM/background use larger buffers.
+            let buf = forBackground
+                ? PerformanceMemory.preferredBackgroundIOBufferDuration
+                : PerformanceMemory.preferredIOBufferDuration
+            try session.setPreferredIOBufferDuration(buf)
+            // Always prefer 48 kHz (graph + modern device path). Battery cost is minor.
+            try session.setPreferredSampleRate(Self.playbackSampleRate)
             try session.setActive(true)
         } catch {
             print("AVAudioSession error: \(error)")
@@ -1716,7 +1750,13 @@ extension AudioPlayerEngine {
     }
 
     private func applySessionPowerMode(background: Bool) {
-        try? AVAudioSession.sharedInstance().setPreferredIOBufferDuration(background ? 0.100 : 0.050)
+        let session = AVAudioSession.sharedInstance()
+        let buf = background
+            ? PerformanceMemory.preferredBackgroundIOBufferDuration
+            : PerformanceMemory.preferredIOBufferDuration
+        try? session.setPreferredIOBufferDuration(buf)
+        // Rate stays 48 kHz; only buffer duration moves under heat / LPM / background.
+        try? session.setPreferredSampleRate(Self.playbackSampleRate)
     }
 
     // MARK: - Progress + crossfade arming
@@ -1792,9 +1832,45 @@ extension AudioPlayerEngine {
             queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated {
-                self?.fadingOutFile = nil
-                self?.cachedNowPlayingArtwork = nil
-                self?.cachedArtworkTrackID = nil
+                self?.handleMemoryPressure()
+            }
+        }
+        // LPM / thermal: re-apply preferred IO buffer without rebuilding dual-deck graph.
+        NotificationCenter.default.addObserver(
+            forName: PerformanceMemory.powerModeDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                let bg = UIApplication.shared.applicationState == .background
+                self.applySessionPowerMode(background: bg)
+            }
+        }
+    }
+
+    /// Drop non-essential RAM under pressure — never stops audio.
+    private func handleMemoryPressure() {
+        fadingOutFile = nil
+        cachedNowPlayingArtwork = nil
+        cachedArtworkTrackID = nil
+        nowPlayingArtLoadToken &+= 1
+        // Keep a few silence trims; drop the rest (cheap to recompute).
+        if silenceTrimCache.count > 12 {
+            let keep = silenceTrimCache.suffix(12)
+            silenceTrimCache = Dictionary(uniqueKeysWithValues: keep.map { ($0.key, $0.value) })
+        }
+        PerformanceMemory.purgeCaches(reason: "engine.memoryWarning")
+        playerLog.info("memory pressure: purged caches (audio continues)")
+    }
+
+    private func storeSilenceTrim(_ key: String, _ trim: SilenceTrim) {
+        silenceTrimCache[key] = trim
+        if silenceTrimCache.count > silenceTrimCacheCap {
+            // Drop oldest-ish keys (Dictionary order is insertion-based in practice).
+            let overflow = silenceTrimCache.count - silenceTrimCacheCap
+            for k in silenceTrimCache.keys.prefix(overflow) {
+                silenceTrimCache.removeValue(forKey: k)
             }
         }
     }
@@ -1968,8 +2044,8 @@ extension AudioPlayerEngine {
             let clamped = min(max(t, 0), max(duration, progressDeck.duration))
             if abs(currentTime - clamped) >= progressPublishEpsilon {
                 setCurrentTime(clamped)
-                // Debounced session write so force-quit still has a recent position.
-                schedulePersistPlaybackSession()
+                // Position-only (tiny write). Full queue snapshot is on track/queue/pause/background.
+                schedulePersistPlaybackPosition()
             }
         }
         if now - lastNowPlayingPush >= 5 {
@@ -2031,6 +2107,7 @@ extension AudioPlayerEngine {
             MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
             cachedNowPlayingArtwork = nil
             cachedArtworkTrackID = nil
+            nowPlayingArtLoadToken &+= 1
             return
         }
         if !force, var info = MPNowPlayingInfoCenter.default().nowPlayingInfo {
@@ -2048,13 +2125,18 @@ extension AudioPlayerEngine {
             MPNowPlayingInfoPropertyElapsedPlaybackTime: currentTime,
             MPNowPlayingInfoPropertyPlaybackRate: isPlaying ? 1.0 : 0.0
         ]
-        if cachedArtworkTrackID != track.id {
+        // Catalog `artworkData` is a ~96px list thumb — fine for rows, soft on Lock Screen.
+        // Push that immediately so chrome isn’t blank, then upgrade from the file’s full cover.
+        if cachedArtworkTrackID != track.id || cachedNowPlayingArtwork == nil {
+            let needFullLoad = cachedArtworkTrackID != track.id
             cachedArtworkTrackID = track.id
             if let data = track.artworkData, let image = UIImage(data: data) {
-                let img = image
-                cachedNowPlayingArtwork = MPMediaItemArtwork(boundsSize: img.size) { _ in img }
-            } else {
+                cachedNowPlayingArtwork = Self.makeNowPlayingArtwork(from: image)
+            } else if needFullLoad {
                 cachedNowPlayingArtwork = nil
+            }
+            if needFullLoad {
+                scheduleHighResNowPlayingArtwork(for: track)
             }
         }
         if let art = cachedNowPlayingArtwork {
@@ -2062,6 +2144,57 @@ extension AudioPlayerEngine {
         }
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
         lastNowPlayingPush = ProcessInfo.processInfo.systemUptime
+    }
+
+    /// Load embedded cover (same path as immersive hero) for crisp Lock Screen / Control Center art.
+    private func scheduleHighResNowPlayingArtwork(for track: Track) {
+        nowPlayingArtLoadToken &+= 1
+        let token = nowPlayingArtLoadToken
+        let trackID = track.id
+        let thumbData = track.artworkData
+        let fileURL = track.resolvedURL()
+        Task { @MainActor [weak self] in
+            // ~512pt × screen scale ≈ 1000–1500px — sharp on lock screen without multi‑MB full RAW.
+            let image = await ArtworkImageCache.heroImage(
+                trackID: trackID,
+                thumbData: thumbData,
+                fileURL: fileURL,
+                maxPointSide: 512
+            )
+            guard let self else { return }
+            guard token == self.nowPlayingArtLoadToken else { return }
+            guard self.currentTrack?.id == trackID else { return }
+            guard let image else { return }
+            self.cachedArtworkTrackID = trackID
+            self.cachedNowPlayingArtwork = Self.makeNowPlayingArtwork(from: image)
+            // Re-publish metadata with high-res art (force rebuild, art already cached).
+            self.updateNowPlaying(force: true)
+        }
+    }
+
+    /// System requests various sizes; hand back the best image we have (caller already sized).
+    private static func makeNowPlayingArtwork(from image: UIImage) -> MPMediaItemArtwork {
+        let side = max(image.size.width, image.size.height, 1)
+        let bounds = CGSize(width: side, height: side)
+        return MPMediaItemArtwork(boundsSize: bounds) { size in
+            // Prefer returning a well-sized image when the system asks for a specific box.
+            let target = max(size.width, size.height)
+            guard target > 1, max(image.size.width, image.size.height) > target * 1.25 else {
+                return image
+            }
+            let scale = target / max(image.size.width, image.size.height)
+            let newSize = CGSize(
+                width: max(1, (image.size.width * scale).rounded(.down)),
+                height: max(1, (image.size.height * scale).rounded(.down))
+            )
+            let format = UIGraphicsImageRendererFormat.default()
+            format.scale = 1
+            format.opaque = false
+            let renderer = UIGraphicsImageRenderer(size: newSize, format: format)
+            return renderer.image { _ in
+                image.draw(in: CGRect(origin: .zero, size: newSize))
+            }
+        }
     }
 
     private func showToast(_ msg: String) {
@@ -2104,10 +2237,24 @@ extension AudioPlayerEngine {
     private func schedulePersistPlaybackSession() {
         sessionPersistTask?.cancel()
         sessionPersistTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: 700_000_000)
+            try? await Task.sleep(nanoseconds: 500_000_000)
             guard let self, !Task.isCancelled else { return }
             self.persistPlaybackSessionNow()
         }
+    }
+
+    /// Cheap position write during playback — avoids re-encoding the whole queue every few ticks.
+    /// Foreground ~2.5s; background/LPM ~5s to cut flash wear and idle wakeups.
+    private func schedulePersistPlaybackPosition() {
+        let now = ProcessInfo.processInfo.systemUptime
+        let minInterval: TimeInterval = {
+            if ProcessInfo.processInfo.isLowPowerModeEnabled { return 6.0 }
+            if UIApplication.shared.applicationState == .background { return 5.0 }
+            return 2.5
+        }()
+        guard now - lastPositionPersistUptime >= minInterval else { return }
+        lastPositionPersistUptime = now
+        UserDefaults.standard.set(currentTime, forKey: Self.sessionPositionKey)
     }
 
     private func persistPlaybackSessionNow() {
@@ -2119,6 +2266,14 @@ extension AudioPlayerEngine {
             return
         }
         let idx = min(max(queueIndex, 0), queue.count - 1)
+        // Skip identical full snapshots (same queue + index) — only refresh position key.
+        var sig = queue.count &* 1_000_003 &+ idx
+        sig = sig &+ current.id.hashValue
+        if sig == lastFullSessionSignature {
+            UserDefaults.standard.set(currentTime, forKey: Self.sessionPositionKey)
+            return
+        }
+        lastFullSessionSignature = sig
         let snap = PlaybackSessionSnapshot(
             queue: queue.map { .init(track: $0) },
             queueIndex: idx,
@@ -2128,6 +2283,7 @@ extension AudioPlayerEngine {
         )
         if let data = try? JSONEncoder().encode(snap) {
             UserDefaults.standard.set(data, forKey: Self.sessionDefaultsKey)
+            UserDefaults.standard.set(currentTime, forKey: Self.sessionPositionKey)
         }
     }
 
@@ -2138,6 +2294,7 @@ extension AudioPlayerEngine {
 
     private static func clearPlaybackSessionSnapshot() {
         UserDefaults.standard.removeObject(forKey: sessionDefaultsKey)
+        UserDefaults.standard.removeObject(forKey: sessionPositionKey)
     }
 
     private func persistEQNow() {

@@ -91,20 +91,12 @@ struct RootTabView: View {
     }
 
     init() {
-        let navAppearance = UINavigationBarAppearance()
-        navAppearance.configureWithTransparentBackground()
-        navAppearance.shadowColor = .clear
-        navAppearance.shadowImage = UIImage()
-        navAppearance.backgroundColor = .clear
-        UINavigationBar.appearance().standardAppearance = navAppearance
-        UINavigationBar.appearance().scrollEdgeAppearance = navAppearance
-        UINavigationBar.appearance().compactAppearance = navAppearance
+        // System Liquid Glass for nav + tab chrome (don’t force clear / custom blur).
+        AppChrome.configureNavigationBar()
 
         let tabAppearance = UITabBarAppearance()
-        tabAppearance.configureWithTransparentBackground()
-        tabAppearance.backgroundEffect = UIBlurEffect(style: .systemChromeMaterial)
-        tabAppearance.backgroundColor = UIColor.clear
-        tabAppearance.shadowColor = UIColor.separator.withAlphaComponent(0.28)
+        tabAppearance.configureWithDefaultBackground()
+        tabAppearance.shadowColor = .clear
         tabAppearance.shadowImage = UIImage()
         UITabBar.appearance().standardAppearance = tabAppearance
         UITabBar.appearance().scrollEdgeAppearance = tabAppearance
@@ -118,39 +110,36 @@ struct RootTabView: View {
                 TabView(selection: $selectedTab) {
                     NavigationStack {
                         NowPlayingView()
-                            .toolbar { hamburgerToolbarItem }
                     }
                     .tabItem { Label("Now Playing", systemImage: "play.circle.fill") }
                     .tag(RootTab.nowPlaying)
 
                     NavigationStack {
                         MusicListView()
-                            .toolbar { hamburgerToolbarItem }
                     }
                     .tabItem { Label("Music", systemImage: "music.note.list") }
                     .tag(RootTab.music)
 
                     NavigationStack {
                         ArtistsListView()
-                            .toolbar { hamburgerToolbarItem }
                     }
                     .tabItem { Label("Artists", systemImage: "person.2.fill") }
                     .tag(RootTab.artists)
 
                     NavigationStack {
                         AlbumsListView()
-                            .toolbar { hamburgerToolbarItem }
                     }
                     .tabItem { Label("Albums", systemImage: "square.stack.fill") }
                     .tag(RootTab.albums)
 
                     NavigationStack {
                         SearchView()
-                            .toolbar { hamburgerToolbarItem }
                     }
                     .tabItem { Label("Search", systemImage: "magnifyingglass") }
                     .tag(RootTab.search)
                 }
+                // Hamburger lives in the custom Grok header (not UINavigationBar).
+                .environment(\.grokOpenMenu, { showHamburgerSheet = true })
                 .tint(theme.accent)
                 .toolbarBackground(.visible, for: .tabBar)
                 .safeAreaInset(edge: .bottom, spacing: 0) {
@@ -248,10 +237,18 @@ struct RootTabView: View {
             reconcileWithTrack()
             ensureSmartBPMUpNext()
         }
+        .onChange(of: player.isPlaying) { playing in
+            // Pause offline BPM decode while dual-EQ playback owns the device (battery/thermals).
+            library.setPlaybackActive(playing)
+        }
         .onAppear {
+            library.setPlaybackActive(player.isPlaying)
             refreshPlayerArtworkVisuals()
             reconcileWithTrack()
             ensureSmartBPMUpNext()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
+            library.flushCatalogIfNeeded()
         }
         .onChange(of: library.isAnalyzingBPM) { analyzing in
             if !analyzing {
@@ -473,17 +470,6 @@ struct RootTabView: View {
         }
     }
 
-    private var hamburgerToolbarItem: ToolbarItem<(), some View> {
-        ToolbarItem(placement: .topBarLeading) {
-            Button {
-                showHamburgerSheet = true
-            } label: {
-                Image(systemName: "line.3.horizontal")
-                    .font(.app(size: 18, weight: .bold))
-                    .foregroundStyle(theme.accent)
-            }
-        }
-    }
 }
 
 struct HamburgerMenuSheet: View {
@@ -518,14 +504,12 @@ struct HamburgerMenuSheet: View {
                 .padding(16)
                 .padding(.bottom, 12)
             }
+            .grokScrollEdgeBlur()
             .background { LiquidGlassBackground() }
-            .navigationTitle("Settings")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Done") { dismiss() }
-                        .font(.app(size: 15, weight: .bold, design: .rounded))
-                }
+            .grokStyleNavigationChrome(title: "Settings", showsMenu: false) {
+                Button("Done") { dismiss() }
+                    .font(.app(size: 15, weight: .bold, design: .rounded))
+                    .foregroundStyle(theme.accent)
             }
         }
     }

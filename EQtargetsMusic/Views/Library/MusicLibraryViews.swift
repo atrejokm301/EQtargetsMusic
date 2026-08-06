@@ -138,60 +138,61 @@ struct MusicListView: View {
                 }
                 .listStyle(.plain)
                 .scrollContentBackground(.hidden)
+                .grokScrollEdgeBlur()
                 // Faster list scrolling — fewer offscreen views retained.
                 .environment(\.defaultMinListRowHeight, 56)
             }
         }
         // Solid black behind lists (blur blobs are expensive while scrolling).
         .background { theme.background.ignoresSafeArea() }
-        .navigationTitle("Music")
-        .navigationBarTitleDisplayMode(.large)
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Menu {
-                    Section("Sort by") {
-                        ForEach(MusicSortMode.allCases) { mode in
-                            Button {
-                                sortModeRaw = mode.rawValue
-                            } label: {
-                                Label(mode.title, systemImage: mode.systemImage)
-                                if sortMode == mode {
-                                    Image(systemName: "checkmark")
-                                }
+        .grokStyleNavigationChrome(title: "Music") {
+            Menu {
+                Section("Sort by") {
+                    ForEach(MusicSortMode.allCases) { mode in
+                        Button {
+                            sortModeRaw = mode.rawValue
+                        } label: {
+                            Label(mode.title, systemImage: mode.systemImage)
+                            if sortMode == mode {
+                                Image(systemName: "checkmark")
                             }
                         }
                     }
-                    Divider()
-                    Button {
-                        showFolderImporter = true
-                    } label: {
-                        Label("Import Folder…", systemImage: "folder.badge.plus")
-                    }
-                    Button {
-                        showFileImporter = true
-                    } label: {
-                        Label("Import Files…", systemImage: "doc.badge.plus")
-                    }
-                    Button {
-                        Task { await library.rescan() }
-                    } label: {
-                        Label("Rescan Library", systemImage: "arrow.clockwise")
-                    }
-                    Button {
-                        Task { await library.analyzeMissingBPMs() }
-                    } label: {
-                        Label("Analyze BPM (pending)", systemImage: "metronome")
-                    }
-                    Button {
-                        Task { await library.forceRedetectMissingBPMValues() }
-                    } label: {
-                        Label("Re-scan all missing BPMs", systemImage: "metronome.fill")
-                    }
-                } label: {
-                    Image(systemName: "plus.circle.fill")
-                        .foregroundStyle(theme.accent)
                 }
+                Divider()
+                Button {
+                    showFolderImporter = true
+                } label: {
+                    Label("Import Folder…", systemImage: "folder.badge.plus")
+                }
+                Button {
+                    showFileImporter = true
+                } label: {
+                    Label("Import Files…", systemImage: "doc.badge.plus")
+                }
+                Button {
+                    Task { await library.rescan() }
+                } label: {
+                    Label("Rescan Library", systemImage: "arrow.clockwise")
+                }
+                Button {
+                    Task { await library.analyzeMissingBPMs() }
+                } label: {
+                    Label("Analyze BPM (pending)", systemImage: "metronome")
+                }
+                Button {
+                    Task { await library.forceRedetectMissingBPMValues() }
+                } label: {
+                    Label("Re-scan all missing BPMs", systemImage: "metronome.fill")
+                }
+            } label: {
+                Image(systemName: "plus.circle.fill")
+                    .font(.app(size: 20, weight: .semibold))
+                    .foregroundStyle(theme.accent)
+                    .frame(width: 40, height: 40)
+                    .contentShape(Rectangle())
             }
+            .accessibilityLabel("Add and library actions")
         }
         .fileImporter(
             isPresented: $showFileImporter,
@@ -315,8 +316,9 @@ struct ArtistsListView: View {
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
+        .grokScrollEdgeBlur()
         .background { theme.background.ignoresSafeArea() }
-        .navigationTitle("Artists")
+        .grokStyleNavigationChrome(title: "Artists")
     }
 
     @ViewBuilder
@@ -399,17 +401,18 @@ struct ArtistDetailView: View {
         }
         .listStyle(.insetGrouped)
         .scrollContentBackground(.hidden)
+        .grokScrollEdgeBlur()
         .background { theme.background.ignoresSafeArea() }
-        .navigationTitle(artist.name)
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button(role: .destructive) {
-                    library.deleteArtist(artist)
-                } label: {
-                    Image(systemName: "trash")
-                        .foregroundStyle(theme.danger)
-                }
+        .grokStyleNavigationChrome(title: artist.name, showsBack: true, showsMenu: false) {
+            Button(role: .destructive) {
+                library.deleteArtist(artist)
+            } label: {
+                Image(systemName: "trash")
+                    .foregroundStyle(theme.danger)
+                    .frame(width: 40, height: 40)
+                    .contentShape(Rectangle())
             }
+            .accessibilityLabel("Delete artist")
         }
     }
 
@@ -483,8 +486,9 @@ struct AlbumsListView: View {
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
+        .grokScrollEdgeBlur()
         .background { theme.background.ignoresSafeArea() }
-        .navigationTitle("Albums")
+        .grokStyleNavigationChrome(title: "Albums")
     }
 
     @ViewBuilder
@@ -545,17 +549,18 @@ struct AlbumDetailView: View {
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
+        .grokScrollEdgeBlur()
         .background { theme.background.ignoresSafeArea() }
-        .navigationTitle(album.name)
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button(role: .destructive) {
-                    library.deleteAlbum(album)
-                } label: {
-                    Image(systemName: "trash")
-                        .foregroundStyle(theme.danger)
-                }
+        .grokStyleNavigationChrome(title: album.name, showsBack: true, showsMenu: false) {
+            Button(role: .destructive) {
+                library.deleteAlbum(album)
+            } label: {
+                Image(systemName: "trash")
+                    .foregroundStyle(theme.danger)
+                    .frame(width: 40, height: 40)
+                    .contentShape(Rectangle())
             }
+            .accessibilityLabel("Delete album")
         }
     }
 }
@@ -694,9 +699,10 @@ struct SearchView: View {
                 }
                 .listStyle(.plain)
                 .scrollContentBackground(.hidden)
+                .grokScrollEdgeBlur()
             }
         }
         .background { theme.background.ignoresSafeArea() }
-        .navigationTitle("Search")
+        .grokStyleNavigationChrome(title: "Search")
     }
 }

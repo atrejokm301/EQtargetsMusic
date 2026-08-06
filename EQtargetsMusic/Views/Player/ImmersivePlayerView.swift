@@ -40,7 +40,13 @@ struct ImmersivePlayerView: View {
     @State private var heroLoadTask: Task<Void, Never>?
     @State private var backdropImage: UIImage?
 
-    private let controlCorner: CGFloat = 18
+    /// 8pt grid — glass action pills (Queue / EQ).
+    private let controlCorner: CGFloat = 16
+
+    /// Warm paper-white for type on black art rooms (brand dark primary, not cool #FFF).
+    private var immersiveInk: Color {
+        Color.appPrimaryText(isDark: true)
+    }
 
     private var isInteractivelyDragging: Bool {
         isExternalDragging || collapseDragActive
@@ -52,9 +58,9 @@ struct ImmersivePlayerView: View {
         return PlayerTransitionMetrics.clamp(progress)
     }
 
-    /// Shorter than open distance so the first pixels of a dismiss swipe produce visible motion.
+    /// Shorter than open distance so dismiss still responds early, but not so short it feels edgy.
     private func collapseDistance(containerHeight: CGFloat) -> CGFloat {
-        max(containerHeight * 0.42, 240)
+        max(containerHeight * 0.48, 260)
     }
 
     var body: some View {
@@ -64,23 +70,26 @@ struct ImmersivePlayerView: View {
             let h = geo.size.height
             let w = geo.size.width
             let usableH = h - topSafe - bottomSafe
-            let chromeBelowArt: CGFloat = 96 + 58 + 74 + 64
-            let artFromBudget = max(220, usableH - chromeBelowArt - 48)
-            let artSide = min(w - 40, artFromBudget, usableH * 0.48, 380)
+            // 8pt grid chrome budget under art: meta · scrubber · transport · actions · gaps.
+            // Pro Max gains larger art; short phones keep a floor so chrome never collides.
+            let chromeBelowArt: CGFloat = 72 + 48 + 80 + 56 + 40
+            let artFromBudget = max(240, usableH - chromeBelowArt - 24)
+            let artSide = min(w - 48, artFromBudget, usableH * 0.52, 400)
 
             let p = effectiveProgress(containerHeight: h)
             let overlayGlobal = geo.frame(in: .global)
 
             let fullArtRect = CGRect(
                 x: (w - artSide) / 2,
-                y: min(topSafe + max(12, usableH * 0.05) + 100, h * 0.22),
+                y: min(topSafe + max(8, usableH * 0.04) + 96, h * 0.20),
                 width: artSide,
                 height: artSide
             )
 
             let miniLocal: CGRect = {
+                // Fallback matches MiniPlayerBar art (36) if preference hasn't reported yet.
                 guard miniArtGlobalFrame.width > 1 else {
-                    return CGRect(x: 22, y: h - 120, width: 42, height: 42)
+                    return CGRect(x: 28, y: h - 128, width: 36, height: 36)
                 }
                 return CGRect(
                     x: miniArtGlobalFrame.minX - overlayGlobal.minX,
@@ -101,9 +110,11 @@ struct ImmersivePlayerView: View {
             let scrimT = interactiveCollapse
                 ? M.clamp(p)
                 : M.smoothstep(M.scrimStart, M.scrimEnd, p)
+            // Art leads the transition: finger-linear while dragging (expand or collapse),
+            // smoothstep only on free settle so it still feels cinematic after a tap/fling.
             let artGrowth: CGFloat = {
                 if reduceMotion { return M.clamp(p) }
-                if interactiveCollapse { return M.clamp(p) } // linear with finger
+                if isInteractivelyDragging { return M.clamp(p) }
                 return M.smoothstep(0, M.heroGrowthEnd, p)
             }()
             let metaT = reduceMotion ? M.smoothstep(0.15, 0.55, p) : M.smoothstep(M.metaStart, M.metaEnd, p)
@@ -112,7 +123,8 @@ struct ImmersivePlayerView: View {
             let bottomT = reduceMotion ? M.smoothstep(0.50, 0.95, p) : M.smoothstep(M.bottomActionsStart, M.bottomActionsEnd, p)
 
             let currentArt = lerpRect(miniLocal, fullArtRect, artGrowth)
-            let artCorner = 12 + (22 - 12) * artGrowth
+            // Match mini-player art corner (8) → full soft square (20).
+            let artCorner = 8 + (20 - 8) * artGrowth
 
             // Linear lift with progress so dismiss responds on the first pixels
             // (smoothstep plateaus near p=1 felt like a dead zone / delay).
@@ -122,8 +134,9 @@ struct ImmersivePlayerView: View {
                 let travel = collapseDistance(containerHeight: h)
                 return (1 - p) * travel
             }()
-            let sheetScale: CGFloat = reduceMotion ? 1 : (0.985 + 0.015 * M.smoothstep(0.2, 1, p))
-            let playScale: CGFloat = 0.96 + 0.04 * transportT
+            // Slight scale bloom so open/close reads as a soft expand, not a hard cut.
+            let sheetScale: CGFloat = reduceMotion ? 1 : (0.972 + 0.028 * M.smoothstep(0.12, 1, p))
+            let playScale: CGFloat = 0.94 + 0.06 * transportT
 
             ZStack {
                 // Dynamic artwork blur stack: palette gradient → Material → scrim.
@@ -132,19 +145,20 @@ struct ImmersivePlayerView: View {
                     .frame(width: w, height: h)
                     .opacity(Double(max(washT, scrimT * 0.85)))
                     .allowsHitTesting(false)
-                    .animation(reduceMotion ? nil : .easeInOut(duration: 0.32), value: artworkVisuals.trackID)
+                    .animation(reduceMotion ? nil : .easeInOut(duration: 0.48), value: artworkVisuals.trackID)
 
-                // Hero artwork (primary anchor).
+                // Hero artwork — continuous morph from mini art frame → full art.
+                // Always fully opaque while the surface is up so open never “blinks” the cover.
                 heroArtwork(side: max(currentArt.width, 1))
                     .frame(width: currentArt.width, height: currentArt.height)
                     .clipShape(RoundedRectangle(cornerRadius: artCorner, style: .continuous))
                     .shadow(
-                        color: artworkVisuals.tintDeep.opacity(0.45 * Double(artGrowth)),
-                        radius: 10 + 14 * artGrowth,
-                        y: 5 + 7 * artGrowth
+                        color: artworkVisuals.tintDeep.opacity(0.18 + 0.32 * Double(artGrowth)),
+                        radius: 4 + 26 * artGrowth,
+                        y: 2 + 14 * artGrowth
                     )
                     .position(x: currentArt.midX, y: currentArt.midY)
-                    .opacity(Double(max(washT, artGrowth)))
+                    .opacity(p > 0.001 ? 1 : 0)
                     .allowsHitTesting(false)
 
                 // Expanded chrome (staged).
@@ -153,54 +167,56 @@ struct ImmersivePlayerView: View {
                         .padding(.top, topSafe)
                         .opacity(Double(max(metaT, M.smoothstep(0.15, 0.45, p))))
 
-                    Spacer(minLength: max(12, usableH * 0.05))
+                    Spacer(minLength: max(8, usableH * 0.04))
 
                     Color.clear
                         .frame(width: artSide, height: artSide)
                         .frame(maxWidth: .infinity)
 
-                    VStack(spacing: 5) {
+                    // Title / artist / album — Google Sans Flex hierarchy, warm ink.
+                    VStack(spacing: 4) {
                         Text(player.currentTrack?.title ?? "Nothing Playing")
-                            .font(.app(size: 22, weight: .bold, design: .rounded))
-                            .foregroundStyle(.white)
+                            .font(.app(size: 22, weight: .bold))
+                            .foregroundStyle(immersiveInk)
                             .multilineTextAlignment(.center)
                             .lineLimit(2)
                             .minimumScaleFactor(0.82)
 
                         Text(player.currentTrack?.artist ?? "")
-                            .font(.app(size: 16, weight: .medium, design: .rounded))
-                            .foregroundStyle(.white.opacity(0.78))
+                            .font(.app(size: 15, weight: .medium))
+                            .foregroundStyle(immersiveInk.opacity(0.78))
                             .lineLimit(1)
 
                         if let album = player.currentTrack?.album, !album.isEmpty {
                             Text(album)
-                                .font(.app(size: 13, weight: .regular, design: .rounded))
-                                .foregroundStyle(.white.opacity(0.48))
+                                .font(.app(size: 12, weight: .regular))
+                                .foregroundStyle(immersiveInk.opacity(0.42))
                                 .lineLimit(1)
                         }
                     }
-                    .padding(.horizontal, 28)
-                    .padding(.top, 16)
+                    .padding(.horizontal, 32)
+                    .padding(.top, 12)
                     .opacity(Double(metaT))
-                    .offset(y: (1 - metaT) * (reduceMotion ? 6 : 12))
+                    // Longer travel + spring = glide-in rather than a snap.
+                    .offset(y: (1 - metaT) * (reduceMotion ? 8 : 16))
 
-                    Spacer(minLength: 10)
+                    Spacer(minLength: 16)
 
                     PlayerProgressScrubber(
                         isInteractive: p >= M.interactiveControlsThreshold && !isInteractivelyDragging,
                         isCollapseDragging: collapseDragActive
                     )
-                    .padding(.horizontal, 28)
+                    .padding(.horizontal, 32)
                     .opacity(Double(scrubT))
-                    .offset(y: (1 - scrubT) * (reduceMotion ? 4 : 10))
+                    .offset(y: (1 - scrubT) * (reduceMotion ? 6 : 12))
                     .allowsHitTesting(scrubT > 0.9 && !isInteractivelyDragging)
 
                     transportRow(playScale: playScale)
-                        .foregroundStyle(.white)
+                        .foregroundStyle(immersiveInk)
                         .padding(.horizontal, 8)
-                        .padding(.top, 8)
+                        .padding(.top, 12)
                         .opacity(Double(transportT))
-                        .offset(y: (1 - transportT) * (reduceMotion ? 4 : 12))
+                        .offset(y: (1 - transportT) * (reduceMotion ? 6 : 14))
                         .allowsHitTesting(transportT > 0.9 && !isInteractivelyDragging)
 
                     HStack(spacing: 12) {
@@ -222,11 +238,11 @@ struct ImmersivePlayerView: View {
                         .accessibilityLabel("Open equalizer workspace")
                         .disabled(p < M.interactiveControlsThreshold)
                     }
-                    .padding(.horizontal, 28)
-                    .padding(.top, 14)
-                    .padding(.bottom, bottomSafe + 16)
+                    .padding(.horizontal, 32)
+                    .padding(.top, 12)
+                    .padding(.bottom, bottomSafe + 12)
                     .opacity(Double(bottomT))
-                    .offset(y: (1 - bottomT) * (reduceMotion ? 4 : 10))
+                    .offset(y: (1 - bottomT) * (reduceMotion ? 6 : 12))
                     .allowsHitTesting(bottomT > 0.9 && p >= M.interactiveControlsThreshold && !isInteractivelyDragging)
                 }
                 .frame(width: w, height: h, alignment: .top)
@@ -285,49 +301,57 @@ struct ImmersivePlayerView: View {
     // MARK: - Transport
 
     private func transportRow(playScale: CGFloat) -> some View {
-        HStack(spacing: 0) {
+        let offInk = immersiveInk.opacity(0.52)
+        return HStack(spacing: 0) {
             Button { player.cycleShuffleMode() } label: {
                 Image(systemName: player.shuffleMode.iconName)
                     .font(.app(size: 17, weight: .semibold))
-                    .foregroundStyle(player.shuffleMode == .off ? .white.opacity(0.38) : theme.accent)
+                    .foregroundStyle(player.shuffleMode == .off ? offInk : theme.accent)
                     .symbolVariant(player.shuffleMode == .banger ? .fill : .none)
                     .frame(maxWidth: .infinity)
                     .frame(height: 48)
+                    .contentShape(Rectangle())
             }
             .accessibilityLabel("Shuffle \(player.shuffleMode.rawValue)")
 
             Button { player.skipBackward() } label: {
                 Image(systemName: "backward.fill")
-                    .font(.app(size: 24, weight: .semibold))
+                    .font(.app(size: 26, weight: .semibold))
+                    .foregroundStyle(immersiveInk.opacity(0.92))
                     .frame(maxWidth: .infinity)
                     .frame(height: 48)
+                    .contentShape(Rectangle())
             }
             .accessibilityLabel("Previous track")
 
             Button { player.togglePlayPause() } label: {
                 Image(systemName: player.isPlaying ? "pause.circle.fill" : "play.circle.fill")
-                    .font(.app(size: 64))
+                    .font(.app(size: 68))
                     .symbolRenderingMode(.hierarchical)
                     .foregroundStyle(theme.accent)
-                    .frame(width: 76, height: 76)
+                    .frame(width: 80, height: 80)
+                    .contentShape(Rectangle())
                     .scaleEffect(playScale)
             }
             .accessibilityLabel(player.isPlaying ? "Pause" : "Play")
 
             Button { player.skipForward() } label: {
                 Image(systemName: "forward.fill")
-                    .font(.app(size: 24, weight: .semibold))
+                    .font(.app(size: 26, weight: .semibold))
+                    .foregroundStyle(immersiveInk.opacity(0.92))
                     .frame(maxWidth: .infinity)
                     .frame(height: 48)
+                    .contentShape(Rectangle())
             }
             .accessibilityLabel("Next track")
 
             Button { player.cycleRepeatMode() } label: {
                 Image(systemName: player.repeatMode.iconName)
                     .font(.app(size: 17, weight: .semibold))
-                    .foregroundStyle(player.repeatMode == .off ? .white.opacity(0.38) : theme.accent)
+                    .foregroundStyle(player.repeatMode == .off ? offInk : theme.accent)
                     .frame(maxWidth: .infinity)
                     .frame(height: 48)
+                    .contentShape(Rectangle())
             }
             .accessibilityLabel("Repeat \(player.repeatMode.rawValue)")
         }
@@ -423,25 +447,24 @@ struct ImmersivePlayerView: View {
                     )
                     .ignoresSafeArea()
 
-                    // C) Queue-like frost — depth without killing color
+                    // C) Light frost — keep album color vivid; type still reads via bottom scrim
                     if reduceTransparency {
-                        Color.black.opacity(0.38)
+                        Color.black.opacity(0.34)
                             .ignoresSafeArea()
                     } else {
                         Rectangle()
                             .fill(.ultraThinMaterial)
-                            .opacity(0.38)
+                            .opacity(0.30)
                             .ignoresSafeArea()
-                        // Extra dark veil so white type always reads
-                        Color.black.opacity(0.18)
+                        Color.black.opacity(0.14)
                             .ignoresSafeArea()
                     }
 
-                    // D) Top sheen
+                    // D) Top sheen (warm, not cool white)
                     VStack(spacing: 0) {
                         LinearGradient(
                             colors: [
-                                Color.white.opacity(0.07),
+                                immersiveInk.opacity(0.06),
                                 Color.clear
                             ],
                             startPoint: .top,
@@ -459,14 +482,14 @@ struct ImmersivePlayerView: View {
                         LinearGradient(
                             colors: [
                                 Color.clear,
-                                Color.black.opacity(0.25),
-                                Color.black.opacity(0.62),
-                                Color.black.opacity(0.82)
+                                Color.black.opacity(0.22),
+                                Color.black.opacity(0.58),
+                                Color.black.opacity(0.84)
                             ],
                             startPoint: .top,
                             endPoint: .bottom
                         )
-                        .frame(height: h * 0.42)
+                        .frame(height: h * 0.40)
                     }
                     .ignoresSafeArea()
                     .allowsHitTesting(false)
@@ -550,8 +573,8 @@ struct ImmersivePlayerView: View {
     private var dismissGrabChrome: some View {
         VStack(spacing: 8) {
             Capsule()
-                .fill(.white.opacity(0.55))
-                .frame(width: 48, height: 5)
+                .fill(immersiveInk.opacity(0.50))
+                .frame(width: 40, height: 5)
                 .padding(.top, 8)
 
             HStack {
@@ -560,13 +583,13 @@ struct ImmersivePlayerView: View {
                 } label: {
                     Image(systemName: "chevron.down")
                         .font(.app(size: 16, weight: .bold))
-                        .foregroundStyle(.white.opacity(0.9))
+                        .foregroundStyle(immersiveInk.opacity(0.92))
                         .frame(width: 44, height: 44)
                         .background {
                             Circle()
                                 .fill(.ultraThinMaterial)
                                 .environment(\.colorScheme, .dark)
-                                .overlay(Circle().strokeBorder(Color.white.opacity(0.22), lineWidth: 0.8))
+                                .overlay(Circle().strokeBorder(immersiveInk.opacity(0.22), lineWidth: 0.8))
                         }
                 }
                 .buttonStyle(.plain)
@@ -576,17 +599,18 @@ struct ImmersivePlayerView: View {
                 Spacer()
 
                 if player.crossfade.isEnabled {
-                    Text("Crossfade \(player.crossfade.durationSeconds)s")
-                        .font(.app(size: 11, weight: .semibold, design: .rounded))
-                        .foregroundStyle(.white.opacity(0.55))
-                        .padding(.horizontal, 10)
+                    Text("Blend \(player.crossfade.durationSeconds)s")
+                        .font(.app(size: 11, weight: .semibold))
+                        .foregroundStyle(immersiveInk.opacity(0.58))
+                        .padding(.horizontal, 12)
                         .padding(.vertical, 6)
                         .background {
                             Capsule()
                                 .fill(.ultraThinMaterial)
                                 .environment(\.colorScheme, .dark)
-                                .overlay(Capsule().strokeBorder(Color.white.opacity(0.18), lineWidth: 0.7))
+                                .overlay(Capsule().strokeBorder(immersiveInk.opacity(0.18), lineWidth: 0.7))
                         }
+                        .accessibilityLabel("Blend \(player.crossfade.durationSeconds) seconds")
                 }
             }
             .padding(.horizontal, 16)
@@ -594,7 +618,7 @@ struct ImmersivePlayerView: View {
             Spacer(minLength: 0)
         }
         .frame(maxWidth: .infinity)
-        .frame(height: 100)
+        .frame(height: 96)
         .contentShape(Rectangle())
         .accessibilityHint("Swipe down anywhere to close the full player")
     }
@@ -693,26 +717,29 @@ struct ImmersivePlayerView: View {
     ) -> some View {
         Button(action: action) {
             Label(title, systemImage: systemImage)
-                .font(.app(size: 14, weight: .bold, design: .rounded))
+                .font(.app(size: 14, weight: .semibold))
                 .frame(maxWidth: .infinity)
-                .padding(.vertical, 13)
-                .foregroundStyle(.white)
+                .padding(.vertical, 14)
+                .foregroundStyle(immersiveInk)
                 .background {
                     RoundedRectangle(cornerRadius: controlCorner, style: .continuous)
                         .fill(.ultraThinMaterial)
                         .environment(\.colorScheme, .dark)
                         .overlay {
                             RoundedRectangle(cornerRadius: controlCorner, style: .continuous)
-                                .fill(emphasized ? theme.accent.opacity(0.42) : Color.white.opacity(0.08))
+                                .fill(
+                                    emphasized
+                                        ? theme.accent.opacity(0.52)
+                                        : immersiveInk.opacity(0.08)
+                                )
                         }
                         .overlay {
                             RoundedRectangle(cornerRadius: controlCorner, style: .continuous)
                                 .strokeBorder(
                                     LinearGradient(
-                                        colors: [
-                                            Color.white.opacity(0.38),
-                                            Color.white.opacity(0.08)
-                                        ],
+                                        colors: emphasized
+                                            ? [theme.accent.opacity(0.65), theme.accent.opacity(0.20)]
+                                            : [immersiveInk.opacity(0.32), immersiveInk.opacity(0.08)],
                                         startPoint: .topLeading,
                                         endPoint: .bottomTrailing
                                     ),

@@ -167,9 +167,20 @@ struct NowPlayingView: View {
             .padding(.bottom, 24)
         }
         .scrollIndicators(.visible)
+        .grokScrollEdgeBlur()
         .background { LiquidGlassBackground() }
-        .navigationTitle("Now Playing")
-        .navigationBarTitleDisplayMode(.inline)
+        .grokStyleNavigationChrome(title: "Now Playing") {
+            Button {
+                showAutoMixSheet = true
+            } label: {
+                Image(systemName: "shuffle.circle")
+                    .font(.app(size: 16, weight: .bold))
+                    .foregroundStyle(player.crossfade.isEnabled ? theme.accent : theme.secondaryText)
+                    .frame(width: 40, height: 40)
+                    .contentShape(Rectangle())
+            }
+            .accessibilityLabel("Crossfade settings")
+        }
         .onAppear {
             displayTime = player.currentTime
         }
@@ -179,18 +190,6 @@ struct NowPlayingView: View {
         .onReceive(player.progressSubject) { t in
             guard !isScrubbing else { return }
             displayTime = t
-        }
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    showAutoMixSheet = true
-                } label: {
-                    Image(systemName: "shuffle.circle")
-                        .font(.app(size: 16, weight: .bold))
-                        .foregroundStyle(player.crossfade.isEnabled ? theme.accent : theme.secondaryText)
-                        .accessibilityLabel("Crossfade settings")
-                }
-            }
         }
         .sheet(isPresented: $showAutoMixSheet) {
             AutoMixSettingsSheet()
@@ -291,7 +290,10 @@ struct AutoMixSettingsSheet: View {
     @Environment(\.grokTheme) private var theme
     @Environment(\.dismiss) private var dismiss
 
-    private let choices = CrossfadeSettings.choices
+    private var durationLabel: String {
+        let s = player.crossfade.durationSeconds
+        return s == 0 ? "Off" : "\(s)s"
+    }
 
     var body: some View {
         NavigationStack {
@@ -312,28 +314,56 @@ struct AutoMixSettingsSheet: View {
                     .glassCard(corner: 16)
 
                     VStack(alignment: .leading, spacing: 12) {
-                        Text("Duration")
-                            .font(.app(size: 14, weight: .semibold, design: .rounded))
-                            .foregroundStyle(theme.primaryText)
-                        Text("How long both songs overlap. Off = hard cut. On long tracks, 15–30s+ is honored (up to ~75% of the current song). Short tracks still auto-cap so the song isn’t only fade.")
+                        HStack(alignment: .firstTextBaseline) {
+                            Text("Blend length")
+                                .font(.app(size: 14, weight: .semibold, design: .rounded))
+                                .foregroundStyle(theme.primaryText)
+                            Spacer()
+                            Text(durationLabel)
+                                .font(.app(size: 16, weight: .bold, design: .rounded))
+                                .foregroundStyle(theme.accent)
+                                .monospacedDigit()
+                                .accessibilityLabel(durationLabel)
+                        }
+                        Text("How long both songs overlap. Drag for any length 0–60s (1s steps). Off = hard cut.")
                             .font(.app(size: 12, weight: .medium, design: .rounded))
                             .foregroundStyle(theme.secondaryText)
                             .fixedSize(horizontal: false, vertical: true)
 
-                        // Off + up to 60s (preset grid; engine also caps vs track length)
-                        LazyVGrid(
-                            columns: [GridItem(.adaptive(minimum: 52), spacing: 8)],
-                            spacing: 8
-                        ) {
-                            ForEach(choices, id: \.self) { seconds in
+                        // Continuous slider — more granular than the old preset grid.
+                        Slider(
+                            value: Binding(
+                                get: { Double(player.crossfade.durationSeconds) },
+                                set: { player.crossfade = player.crossfade.withDurationSeconds(Int($0.rounded())) }
+                            ),
+                            in: 0 ... Double(CrossfadeSettings.maxSeconds),
+                            step: 1
+                        )
+                        .tint(theme.accent)
+                        .accessibilityLabel("Blend length")
+                        .accessibilityValue(durationLabel)
+
+                        HStack {
+                            Text("Off")
+                            Spacer()
+                            Text("30s")
+                            Spacer()
+                            Text("60s")
+                        }
+                        .font(.app(size: 11, weight: .medium, design: .rounded))
+                        .foregroundStyle(theme.tertiaryText)
+
+                        // Quick jumps (optional); slider is the main control.
+                        HStack(spacing: 8) {
+                            ForEach([0, 10, 20, 30, 45, 60], id: \.self) { seconds in
                                 let selected = player.crossfade.durationSeconds == seconds
                                 Button {
                                     player.crossfade = player.crossfade.withDurationSeconds(seconds)
                                 } label: {
-                                    Text(seconds == 0 ? "Off" : "\(seconds)s")
-                                        .font(.app(size: 14, weight: .bold, design: .rounded))
+                                    Text(seconds == 0 ? "Off" : "\(seconds)")
+                                        .font(.app(size: 13, weight: .semibold, design: .rounded))
                                         .frame(maxWidth: .infinity)
-                                        .padding(.vertical, 10)
+                                        .padding(.vertical, 8)
                                         .foregroundStyle(selected ? Color.white : theme.primaryText)
                                         .background(
                                             RoundedRectangle(cornerRadius: 10, style: .continuous)
@@ -442,15 +472,13 @@ struct AutoMixSettingsSheet: View {
                 }
                 .padding(16)
             }
+            .grokScrollEdgeBlur()
             .background { LiquidGlassBackground() }
-            .navigationTitle("Crossfade")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Done") { dismiss() }
-                        .font(.app(size: 15, weight: .bold, design: .rounded))
-                        .accessibilityLabel("Done")
-                }
+            .grokStyleNavigationChrome(title: "Crossfade", showsMenu: false) {
+                Button("Done") { dismiss() }
+                    .font(.app(size: 15, weight: .bold, design: .rounded))
+                    .foregroundStyle(theme.accent)
+                    .accessibilityLabel("Done")
             }
         }
     }

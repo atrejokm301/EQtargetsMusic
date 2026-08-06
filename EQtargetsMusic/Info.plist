@@ -61,5 +61,8 @@
 	<array>
 		<string>GoogleSansFlex.ttf</string>
 	</array>
+	<!-- Same as Espada: True Tone adapts white point for comfortable long viewing (not Photo). -->
+	<key>UIWhitePointAdaptivityStyle</key>
+	<string>UIWhitePointAdaptivityStyleReading</string>
 </dict>
 </plist>

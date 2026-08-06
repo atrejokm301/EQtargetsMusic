@@ -4,6 +4,9 @@
 
 # Xcode
 build/
+build-device/
+build-release/
+build-sim/
 DerivedData/
 *.xcuserstate
 *.xccheckout

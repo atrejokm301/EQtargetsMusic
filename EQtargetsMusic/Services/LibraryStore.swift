@@ -48,6 +48,9 @@ final class LibraryStore: ObservableObject {
     private let decoder = JSONDecoder()
     private var autoBPMTask: Task<Void, Never>?
     private var catalogLoadTask: Task<Void, Never>?
+    private var catalogSaveTask: Task<Void, Never>?
+    /// When true, offline BPM decode pauses (dual-EQ playback owns the device).
+    private var isPlaybackActive = false
 
     /// How many tracks still need a first-time / retry BPM analysis pass.
     var uncheckedBPMCount: Int { tracks.filter { !$0.bpmChecked }.count }
@@ -104,29 +107,46 @@ final class LibraryStore: ObservableObject {
         guard !isAnalyzingBPM, !isScanning else { return }
         applyBPMEngineMigrationIfNeeded()
         guard uncheckedBPMCount > 0 else { return }
-        guard Self.deviceAllowsBackgroundWork else { return }
+        guard deviceAllowsBackgroundWork else { return }
         // Already scheduled.
         if let autoBPMTask, !autoBPMTask.isCancelled { return }
         autoBPMTask = Task(priority: .utility) { [weak self] in
             // Wait until UI is idle so first frame / playback stays snappy.
             try? await Task.sleep(nanoseconds: 6_000_000_000)
             guard let self, !Task.isCancelled else { return }
-            guard Self.deviceAllowsBackgroundWork else { return }
+            guard self.deviceAllowsBackgroundWork else { return }
             let limit = Self.batchLimitForThermal()
             await self.analyzeMissingBPMs(limit: limit)
         }
     }
 
+    /// Pause offline BPM while music is playing (thermal + battery).
+    func setPlaybackActive(_ active: Bool) {
+        isPlaybackActive = active
+        if active {
+            autoBPMTask?.cancel()
+            autoBPMTask = nil
+        } else {
+            startAutoBPMIfNeeded()
+        }
+    }
+
     /// Cheap gates so BPM never fights the user for battery/thermals.
-    private static var deviceAllowsBackgroundWork: Bool {
-        if ProcessInfo.processInfo.isLowPowerModeEnabled { return false }
+    private var deviceAllowsBackgroundWork: Bool {
+        if isPlaybackActive { return false }
+        return Self.deviceAllowsBackgroundWorkStatic
+    }
+
+    private static var deviceAllowsBackgroundWorkStatic: Bool {
+        if PerformanceMemory.devicePrefersLightWork { return false }
         switch ProcessInfo.processInfo.thermalState {
-        case .serious, .critical: return false
         case .fair:
             // Allow work but only tiny batches (see batchLimitForThermal).
             break
         case .nominal:
             break
+        case .serious, .critical:
+            return false
         @unknown default:
             break
         }
@@ -349,7 +369,8 @@ final class LibraryStore: ObservableObject {
         let pending = tracks.filter { !$0.bpmChecked }
         guard !pending.isEmpty else { return }
         guard !isAnalyzingBPM else { return }
-        guard Self.deviceAllowsBackgroundWork else { return }
+        // Instance gate includes “music is playing” — never fight dual-EQ for cores.
+        guard deviceAllowsBackgroundWork else { return }
 
         let effectiveLimit = min(limit, Self.batchLimitForThermal())
         guard effectiveLimit > 0 else { return }
@@ -370,12 +391,11 @@ final class LibraryStore: ObservableObject {
 
         for (offset, track) in batch.enumerated() {
             if Task.isCancelled { break }
-            // Re-check thermals every file — bail early if the phone warms up.
-            if offset % 1 == 0 {
-                guard Self.deviceAllowsBackgroundWork else { break }
-                if Self.batchLimitForThermal() == 0 { break }
-                await Task.yield()
-            }
+            // Re-check thermals / playback every file — bail early if the phone warms up.
+            _ = offset
+            guard deviceAllowsBackgroundWork else { break }
+            if Self.batchLimitForThermal() == 0 { break }
+            await Task.yield()
 
             if let url = track.resolvedURL() {
                 let bpm = await Task.detached(priority: .background) {
@@ -435,7 +455,7 @@ final class LibraryStore: ObservableObject {
             }
             try? await Task.sleep(nanoseconds: coolDown)
             guard let self, !Task.isCancelled else { return }
-            guard Self.deviceAllowsBackgroundWork else { return }
+            guard self.deviceAllowsBackgroundWork else { return }
             await self.analyzeMissingBPMs(limit: Self.batchLimitForThermal())
         }
     }
@@ -460,7 +480,7 @@ final class LibraryStore: ObservableObject {
             let before = uncheckedBPMCount
             await analyzeMissingBPMs(limit: min(Self.maxBPMAnalysesPerScan * 2, 96))
             if uncheckedBPMCount >= before { break } // stalled (thermal / missing files)
-            if !Self.deviceAllowsBackgroundWork { break }
+            if !deviceAllowsBackgroundWork { break }
         }
     }
 
@@ -834,7 +854,8 @@ final class LibraryStore: ObservableObject {
     }
 
     /// Downscale cover art so 1000+ tracks don't blow memory / crash catalog save.
-    /// 96px @ 0.65 quality is plenty for list rows and lock-screen thumbnails.
+    /// 96px @ 0.65 quality is plenty for list rows only — Lock Screen / Now Playing
+    /// load full embedded art from the file via `ArtworkImageCache.heroImage`.
     private static func thumbnailJPEG(from data: Data, maxSide: CGFloat = 96) -> Data? {
         guard let image = UIImage(data: data) else {
             // Keep tiny raw blobs only
@@ -866,22 +887,50 @@ final class LibraryStore: ObservableObject {
     // MARK: - Persistence
 
     private func saveCatalog() {
-        // Persist without re-encoding giant images if any slipped through
-        do {
-            let data = try encoder.encode(tracks)
-            try data.write(to: catalogURL, options: .atomic)
-        } catch {
-            // Retry without artwork if encode/write fails (memory)
-            let stripped = tracks.map { t -> Track in
-                var c = t
-                c.artworkData = nil
-                return c
+        // Debounce + encode off main thread so large libraries don’t hitch UI or thrash flash.
+        // Coalesce rapid BPM-batch / import updates into one atomic write (~0.75s).
+        catalogSaveTask?.cancel()
+        catalogSaveTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 750_000_000)
+            guard let self, !Task.isCancelled else { return }
+            let snapshot = self.tracks
+            let url = self.catalogURL
+            await Task.detached(priority: .utility) {
+                do {
+                    let data = try JSONEncoder().encode(snapshot)
+                    // .atomic avoids partial JSON if the process is killed mid-write.
+                    try data.write(to: url, options: .atomic)
+                } catch {
+                    // Retry without artwork if encode/write fails (memory)
+                    let stripped = snapshot.map { t -> Track in
+                        var c = t
+                        c.artworkData = nil
+                        return c
+                    }
+                    if let data = try? JSONEncoder().encode(stripped) {
+                        try? data.write(to: url, options: .atomic)
+                        await MainActor.run { [weak self] in
+                            self?.tracks = stripped
+                        }
+                    }
+                    print("catalog save: \(error)")
+                }
+            }.value
+        }
+    }
+
+    /// Flush a pending debounced save when leaving the foreground (no-op if nothing queued).
+    /// Encode stays off the main thread so resign-active never hitch UI or spike battery.
+    func flushCatalogIfNeeded() {
+        guard catalogSaveTask != nil else { return }
+        catalogSaveTask?.cancel()
+        catalogSaveTask = nil
+        let snapshot = tracks
+        let url = catalogURL
+        Task.detached(priority: .utility) {
+            if let data = try? JSONEncoder().encode(snapshot) {
+                try? data.write(to: url, options: .atomic)
             }
-            if let data = try? encoder.encode(stripped) {
-                try? data.write(to: catalogURL, options: .atomic)
-                tracks = stripped
-            }
-            print("catalog save: \(error)")
         }
     }
 

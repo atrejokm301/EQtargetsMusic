@@ -9,19 +9,28 @@ import UIKit
 import AVFoundation
 
 enum ArtworkImageCache {
+    /// List thumbs — bounded so large libraries don’t pin hundreds of MB.
+    /// Cost is approximate decoded footprint; NSCache evicts under pressure automatically.
     private static let cache: NSCache<NSString, UIImage> = {
         let c = NSCache<NSString, UIImage>()
-        c.countLimit = 400
-        c.totalCostLimit = 40 * 1024 * 1024
+        c.countLimit = 160
+        c.totalCostLimit = 18 * 1024 * 1024
         return c
     }()
 
+    /// Full-player heroes — few large images only (retina covers, not full RAW).
     private static let heroCache: NSCache<NSString, UIImage> = {
         let c = NSCache<NSString, UIImage>()
-        c.countLimit = 40
-        c.totalCostLimit = 80 * 1024 * 1024
+        c.countLimit = 16
+        c.totalCostLimit = 36 * 1024 * 1024
         return c
     }()
+
+    /// Drop all decoded images (memory warning / thermal). Safe anytime.
+    static func purge() {
+        cache.removeAllObjects()
+        heroCache.removeAllObjects()
+    }
 
     /// List / mini-player thumbnail (uses embedded small catalog JPEG).
     static func image(trackID: UUID, data: Data?) -> UIImage? {
