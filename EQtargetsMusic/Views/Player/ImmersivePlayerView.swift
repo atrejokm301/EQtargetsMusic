@@ -3,7 +3,11 @@
 //  EQtargetsMusic
 //
 //  Full-screen listening surface driven by root `transitionProgress` (0…1).
-//  Staged opacities for deliberate open/close; pull-down from anywhere to collapse.
+//
+//  Performance contract (pre-dates glass chrome — this is the expand path itself):
+//  • Finger drag only paints wash + morphing hero. Full chrome is NOT in the tree.
+//  • Atmosphere colors are cached (no UIColor work per frame).
+//  • Scrubber / transport mount late on open settle so spring frames stay cheap.
 //  Queue sheet above this view. Playback remains AudioPlayerEngine only.
 //
 
@@ -40,6 +44,11 @@ struct ImmersivePlayerView: View {
     @State private var heroLoadTask: Task<Void, Never>?
     @State private var backdropImage: UIImage?
 
+    /// Cached room colors — never recompute UIColor/getHue on every progress tick.
+    @State private var cachedAtmosLite: [Color] = []
+    @State private var cachedAtmosFull: [Color] = []
+    @State private var cachedAtmosTrackID: UUID?
+
     /// 8pt grid — glass action pills (Queue / EQ).
     private let controlCorner: CGFloat = 16
 
@@ -71,13 +80,13 @@ struct ImmersivePlayerView: View {
             let w = geo.size.width
             let usableH = h - topSafe - bottomSafe
             // 8pt grid chrome budget under art: meta · scrubber · transport · actions · gaps.
-            // Pro Max gains larger art; short phones keep a floor so chrome never collides.
             let chromeBelowArt: CGFloat = 72 + 48 + 80 + 56 + 40
             let artFromBudget = max(240, usableH - chromeBelowArt - 24)
             let artSide = min(w - 48, artFromBudget, usableH * 0.52, 400)
 
             let p = effectiveProgress(containerHeight: h)
             let overlayGlobal = geo.frame(in: .global)
+            let dragging = isInteractivelyDragging
 
             let fullArtRect = CGRect(
                 x: (w - artSide) / 2,
@@ -87,7 +96,6 @@ struct ImmersivePlayerView: View {
             )
 
             let miniLocal: CGRect = {
-                // Fallback matches MiniPlayerBar art (36) if preference hasn't reported yet.
                 guard miniArtGlobalFrame.width > 1 else {
                     return CGRect(x: 28, y: h - 128, width: 36, height: 36)
                 }
@@ -99,9 +107,6 @@ struct ImmersivePlayerView: View {
                 )
             }()
 
-            // Staged values from single progress.
-            // During interactive collapse, use more linear mapping near p=1 so the first
-            // finger movement is immediately visible (smoothstep plateaus feel like delay).
             let M = PlayerTransitionMetrics.self
             let interactiveCollapse = collapseDragActive
             let washT = interactiveCollapse
@@ -110,167 +115,84 @@ struct ImmersivePlayerView: View {
             let scrimT = interactiveCollapse
                 ? M.clamp(p)
                 : M.smoothstep(M.scrimStart, M.scrimEnd, p)
-            // Art leads the transition: finger-linear while dragging (expand or collapse),
-            // smoothstep only on free settle so it still feels cinematic after a tap/fling.
             let artGrowth: CGFloat = {
                 if reduceMotion { return M.clamp(p) }
-                if isInteractivelyDragging { return M.clamp(p) }
+                if dragging { return M.clamp(p) }
                 return M.smoothstep(0, M.heroGrowthEnd, p)
             }()
-            let metaT = reduceMotion ? M.smoothstep(0.15, 0.55, p) : M.smoothstep(M.metaStart, M.metaEnd, p)
-            let scrubT = reduceMotion ? M.smoothstep(0.30, 0.70, p) : M.smoothstep(M.scrubberStart, M.scrubberEnd, p)
-            let transportT = reduceMotion ? M.smoothstep(0.40, 0.80, p) : M.smoothstep(M.transportStart, M.transportEnd, p)
-            let bottomT = reduceMotion ? M.smoothstep(0.50, 0.95, p) : M.smoothstep(M.bottomActionsStart, M.bottomActionsEnd, p)
 
             let currentArt = lerpRect(miniLocal, fullArtRect, artGrowth)
-            // Match mini-player art corner (8) → full soft square (20).
             let artCorner = 8 + (20 - 8) * artGrowth
 
-            // Linear lift with progress so dismiss responds on the first pixels
-            // (smoothstep plateaus near p=1 felt like a dead zone / delay).
-            let sheetLift: CGFloat = {
-                if reduceMotion { return (1 - p) * 28 }
-                // Match collapseDistance so finger dy maps ~1:1 while dragging down.
-                let travel = collapseDistance(containerHeight: h)
-                return (1 - p) * travel
-            }()
-            // Slight scale bloom so open/close reads as a soft expand, not a hard cut.
-            let sheetScale: CGFloat = reduceMotion ? 1 : (0.972 + 0.028 * M.smoothstep(0.12, 1, p))
-            let playScale: CGFloat = 0.94 + 0.06 * transportT
-
+            // During finger drag: only wash + hero morph (the pre-glass stutter source was
+            // rebuilding scrubber/transport/meta + multi-layer room every drag frame).
             ZStack {
-                // Dynamic artwork blur stack: palette gradient → Material → scrim.
-                // No per-frame palette work; no live large-image Gaussian path.
-                playerDynamicBackground
-                    .frame(width: w, height: h)
-                    .opacity(Double(max(washT, scrimT * 0.85)))
-                    .allowsHitTesting(false)
-                    .animation(reduceMotion ? nil : .easeInOut(duration: 0.48), value: artworkVisuals.trackID)
+                playerDynamicBackground(
+                    size: CGSize(width: w, height: h),
+                    // Fancy multi-layer room only when open is settled — spring/drag use the cheap wash.
+                    lightweight: dragging || p < 0.92
+                )
+                .frame(width: w, height: h)
+                .opacity(Double(max(washT, scrimT * 0.85)))
+                .allowsHitTesting(false)
 
-                // Hero artwork — continuous morph from mini art frame → full art.
-                // Always fully opaque while the surface is up so open never “blinks” the cover.
                 heroArtwork(side: max(currentArt.width, 1))
                     .frame(width: currentArt.width, height: currentArt.height)
                     .clipShape(RoundedRectangle(cornerRadius: artCorner, style: .continuous))
                     .shadow(
-                        color: artworkVisuals.tintDeep.opacity(0.18 + 0.32 * Double(artGrowth)),
-                        radius: 4 + 26 * artGrowth,
-                        y: 2 + 14 * artGrowth
+                        color: dragging
+                            ? artworkVisuals.tintDeep.opacity(0.22)
+                            : artworkVisuals.tintDeep.opacity(0.18 + 0.32 * Double(artGrowth)),
+                        radius: dragging ? 10 : (4 + 26 * artGrowth),
+                        y: dragging ? 4 : (2 + 14 * artGrowth)
                     )
                     .position(x: currentArt.midX, y: currentArt.midY)
                     .opacity(p > 0.001 ? 1 : 0)
                     .allowsHitTesting(false)
 
-                // Expanded chrome (staged).
-                VStack(spacing: 0) {
-                    dismissGrabChrome
-                        .padding(.top, topSafe)
-                        .opacity(Double(max(metaT, M.smoothstep(0.15, 0.45, p))))
-
-                    Spacer(minLength: max(8, usableH * 0.04))
-
-                    Color.clear
-                        .frame(width: artSide, height: artSide)
-                        .frame(maxWidth: .infinity)
-
-                    // Title / artist / album — Google Sans Flex hierarchy, warm ink.
-                    VStack(spacing: 4) {
-                        Text(player.currentTrack?.title ?? "Nothing Playing")
-                            .font(.app(size: 22, weight: .bold))
-                            .foregroundStyle(immersiveInk)
-                            .multilineTextAlignment(.center)
-                            .lineLimit(2)
-                            .minimumScaleFactor(0.82)
-
-                        Text(player.currentTrack?.artist ?? "")
-                            .font(.app(size: 15, weight: .medium))
-                            .foregroundStyle(immersiveInk.opacity(0.78))
-                            .lineLimit(1)
-
-                        if let album = player.currentTrack?.album, !album.isEmpty {
-                            Text(album)
-                                .font(.app(size: 12, weight: .regular))
-                                .foregroundStyle(immersiveInk.opacity(0.42))
-                                .lineLimit(1)
-                        }
-                    }
-                    .padding(.horizontal, 32)
-                    .padding(.top, 12)
-                    .opacity(Double(metaT))
-                    // Longer travel + spring = glide-in rather than a snap.
-                    .offset(y: (1 - metaT) * (reduceMotion ? 8 : 16))
-
-                    Spacer(minLength: 16)
-
-                    PlayerProgressScrubber(
-                        isInteractive: p >= M.interactiveControlsThreshold && !isInteractivelyDragging,
-                        isCollapseDragging: collapseDragActive
+                if !dragging {
+                    expandedChrome(
+                        p: p,
+                        w: w,
+                        h: h,
+                        topSafe: topSafe,
+                        bottomSafe: bottomSafe,
+                        usableH: usableH,
+                        artSide: artSide
                     )
-                    .padding(.horizontal, 32)
-                    .opacity(Double(scrubT))
-                    .offset(y: (1 - scrubT) * (reduceMotion ? 6 : 12))
-                    .allowsHitTesting(scrubT > 0.9 && !isInteractivelyDragging)
-
-                    transportRow(playScale: playScale)
-                        .foregroundStyle(immersiveInk)
-                        .padding(.horizontal, 8)
-                        .padding(.top, 12)
-                        .opacity(Double(transportT))
-                        .offset(y: (1 - transportT) * (reduceMotion ? 6 : 14))
-                        .allowsHitTesting(transportT > 0.9 && !isInteractivelyDragging)
-
-                    HStack(spacing: 12) {
-                        liquidGlassButton(title: "Queue", systemImage: "list.bullet", emphasized: false) {
-                            showQueue = true
-                        }
-                        .accessibilityLabel("Queue, Playing Next")
-                        .disabled(p < M.interactiveControlsThreshold)
-
-                        liquidGlassButton(
-                            title: player.dual.isBypassed ? "EQ Off" : "EQ",
-                            systemImage: "slider.vertical.3",
-                            emphasized: !player.dual.isBypassed
-                        ) {
-                            collapseThen {
-                                onOpenEQWorkspace?()
-                            }
-                        }
-                        .accessibilityLabel("Open equalizer workspace")
-                        .disabled(p < M.interactiveControlsThreshold)
-                    }
-                    .padding(.horizontal, 32)
-                    .padding(.top, 12)
-                    .padding(.bottom, bottomSafe + 12)
-                    .opacity(Double(bottomT))
-                    .offset(y: (1 - bottomT) * (reduceMotion ? 6 : 12))
-                    .allowsHitTesting(bottomT > 0.9 && p >= M.interactiveControlsThreshold && !isInteractivelyDragging)
                 }
-                .frame(width: w, height: h, alignment: .top)
-                .scaleEffect(sheetScale, anchor: .bottom)
-                .offset(y: sheetLift)
             }
             .frame(width: w, height: h)
             .contentShape(Rectangle())
-            // simultaneous keeps buttons tappable; low min-distance makes dismiss snappy.
             .simultaneousGesture(collapseDragGesture(containerHeight: h))
             .allowsHitTesting(p > 0.5 && !isExternalDragging)
         }
         .ignoresSafeArea()
         .contentShape(Rectangle())
         .onAppear {
-            seedBackdropFromVisuals()
-            loadHeroArt(maxSide: 380)
+            applyTrackArtwork(forceHeroReload: progress >= 0.55)
         }
         .onChange(of: artworkVisuals.trackID) { _ in
-            seedBackdropFromVisuals()
+            // Root refreshed visuals for a new track — always swap hero (lock-screen already does).
+            applyTrackArtwork(forceHeroReload: progress >= 0.55 && !isInteractivelyDragging)
         }
         .onChange(of: player.currentTrack?.id) { id in
-            seedBackdropFromVisuals()
-            loadHeroArt(maxSide: 380)
             if id == nil {
                 showQueue = false
                 collapseDragActive = false
                 collapseDragY = 0
+                heroLoadTask?.cancel()
+                clearHeroArtwork()
+                refreshCachedAtmosphere()
+                return
+            }
+            // Skip / next / crossfade must replace full-player art immediately.
+            applyTrackArtwork(forceHeroReload: progress >= 0.55 && !isInteractivelyDragging)
+        }
+        .onChange(of: progress) { p in
+            // Load full-res only once open is mostly settled (never mid-drag).
+            if p >= 0.88, !isInteractivelyDragging {
+                loadHeroArt(maxSide: 380)
             }
         }
         .sheet(isPresented: $showQueue) {
@@ -279,11 +201,129 @@ struct ImmersivePlayerView: View {
                 .environment(\.grokTheme, theme)
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
-                // Clear system card so material can blur the immersive player underneath.
                 .presentationBackground(.clear)
                 .presentationCornerRadius(30)
                 .presentationBackgroundInteraction(.enabled(upThrough: .medium))
         }
+    }
+
+    // MARK: - Expanded chrome (not mounted while finger is dragging)
+
+    @ViewBuilder
+    private func expandedChrome(
+        p: CGFloat,
+        w: CGFloat,
+        h: CGFloat,
+        topSafe: CGFloat,
+        bottomSafe: CGFloat,
+        usableH: CGFloat,
+        artSide: CGFloat
+    ) -> some View {
+        let M = PlayerTransitionMetrics.self
+        let metaT = reduceMotion ? M.smoothstep(0.15, 0.55, p) : M.smoothstep(M.metaStart, M.metaEnd, p)
+        let scrubT = reduceMotion ? M.smoothstep(0.30, 0.70, p) : M.smoothstep(M.scrubberStart, M.scrubberEnd, p)
+        let transportT = reduceMotion ? M.smoothstep(0.40, 0.80, p) : M.smoothstep(M.transportStart, M.transportEnd, p)
+        let bottomT = reduceMotion ? M.smoothstep(0.50, 0.95, p) : M.smoothstep(M.bottomActionsStart, M.bottomActionsEnd, p)
+        let sheetLift: CGFloat = {
+            if reduceMotion { return (1 - p) * 28 }
+            let travel = collapseDistance(containerHeight: h)
+            return (1 - p) * travel
+        }()
+        let sheetScale: CGFloat = reduceMotion ? 1 : (0.972 + 0.028 * M.smoothstep(0.12, 1, p))
+        let playScale: CGFloat = 0.94 + 0.06 * transportT
+        // Defer heavy controls until open is well along — spring frames only need meta early.
+        let mountControls = p >= 0.40
+
+        VStack(spacing: 0) {
+            dismissGrabChrome
+                .padding(.top, topSafe)
+                .opacity(Double(max(metaT, M.smoothstep(0.15, 0.45, p))))
+
+            Spacer(minLength: max(8, usableH * 0.04))
+
+            Color.clear
+                .frame(width: artSide, height: artSide)
+                .frame(maxWidth: .infinity)
+
+            VStack(spacing: 4) {
+                Text(player.currentTrack?.title ?? "Nothing Playing")
+                    .font(.app(size: 22, weight: .bold))
+                    .foregroundStyle(immersiveInk)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.82)
+
+                Text(player.currentTrack?.artist ?? "")
+                    .font(.app(size: 15, weight: .medium))
+                    .foregroundStyle(immersiveInk.opacity(0.78))
+                    .lineLimit(1)
+
+                if let album = player.currentTrack?.album, !album.isEmpty {
+                    Text(album)
+                        .font(.app(size: 12, weight: .regular))
+                        .foregroundStyle(immersiveInk.opacity(0.42))
+                        .lineLimit(1)
+                }
+            }
+            .padding(.horizontal, 32)
+            .padding(.top, 12)
+            .opacity(Double(metaT))
+            .offset(y: (1 - metaT) * (reduceMotion ? 8 : 16))
+
+            Spacer(minLength: 16)
+
+            if mountControls {
+                PlayerProgressScrubber(
+                    isInteractive: p >= M.interactiveControlsThreshold,
+                    isCollapseDragging: false
+                )
+                .padding(.horizontal, 32)
+                .opacity(Double(scrubT))
+                .offset(y: (1 - scrubT) * (reduceMotion ? 6 : 12))
+                .allowsHitTesting(scrubT > 0.9)
+
+                transportRow(playScale: playScale)
+                    .foregroundStyle(immersiveInk)
+                    .padding(.horizontal, 8)
+                    .padding(.top, 12)
+                    .opacity(Double(transportT))
+                    .offset(y: (1 - transportT) * (reduceMotion ? 6 : 14))
+                    .allowsHitTesting(transportT > 0.9)
+
+                HStack(spacing: 12) {
+                    liquidGlassButton(title: "Queue", systemImage: "list.bullet", emphasized: false) {
+                        showQueue = true
+                    }
+                    .accessibilityLabel("Queue, Playing Next")
+                    .disabled(p < M.interactiveControlsThreshold)
+
+                    liquidGlassButton(
+                        title: player.dual.isBypassed ? "EQ Off" : "EQ",
+                        systemImage: "slider.vertical.3",
+                        emphasized: !player.dual.isBypassed
+                    ) {
+                        collapseThen {
+                            onOpenEQWorkspace?()
+                        }
+                    }
+                    .accessibilityLabel("Open equalizer workspace")
+                    .disabled(p < M.interactiveControlsThreshold)
+                }
+                .padding(.horizontal, 32)
+                .padding(.top, 12)
+                .padding(.bottom, bottomSafe + 12)
+                .opacity(Double(bottomT))
+                .offset(y: (1 - bottomT) * (reduceMotion ? 6 : 12))
+                .allowsHitTesting(bottomT > 0.9 && p >= M.interactiveControlsThreshold)
+            } else {
+                Spacer()
+                    .frame(height: 48 + 80 + 56 + 24)
+                    .padding(.bottom, bottomSafe + 12)
+            }
+        }
+        .frame(width: w, height: h, alignment: .top)
+        .scaleEffect(sheetScale, anchor: .bottom)
+        .offset(y: sheetLift)
     }
 
     // MARK: - Math
@@ -385,171 +425,243 @@ struct ImmersivePlayerView: View {
         }
     }
 
-    /// Full-player room: queue-style glass + tuned album blooms (no muddy plusLighter soup).
-    private var playerDynamicBackground: some View {
-        let atmos = artworkVisuals.atmosphericColors(maxStops: 4)
+    private func refreshCachedAtmosphere() {
+        let id = artworkVisuals.trackID
+        guard id != cachedAtmosTrackID || cachedAtmosLite.isEmpty else { return }
+        cachedAtmosLite = artworkVisuals.atmosphericColors(maxStops: 2)
+        cachedAtmosFull = artworkVisuals.atmosphericColors(maxStops: 4)
+        cachedAtmosTrackID = id
+    }
+
+    /// Full-player room. `lightweight` is a 2-stop linear + solid veil (drag / early open).
+    /// Full path is only used when settled — never re-run UIColor work per frame.
+    private func playerDynamicBackground(size: CGSize, lightweight: Bool) -> some View {
+        let h = size.height
+        let w = size.width
+        let atmos = lightweight ? cachedAtmosLite : cachedAtmosFull
         let hasArt = artworkVisuals.hasArtwork && !atmos.isEmpty
         let c0 = atmos.indices.contains(0) ? atmos[0] : Color.clear
         let c1 = atmos.indices.contains(1) ? atmos[1] : c0
         let c2 = atmos.indices.contains(2) ? atmos[2] : c1
         let c3 = atmos.indices.contains(3) ? atmos[3] : c2
 
-        return GeometryReader { geo in
-            let h = geo.size.height
-            let w = geo.size.width
-            ZStack {
-                // A) Deep black foundation (same language as queue glass)
-                Color.black
-                    .ignoresSafeArea()
+        // Drag path: absolute minimum layers — one vertical wash + black veil. No Material, no radials.
+        if lightweight {
+            return AnyView(
+                ZStack {
+                    Color.black
+                    if hasArt {
+                        LinearGradient(
+                            colors: [
+                                c0.opacity(0.78),
+                                c1.opacity(0.38),
+                                Color.black.opacity(0.94)
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                        Color.black.opacity(0.26)
+                    } else {
+                        theme.accent.opacity(0.12)
+                    }
+                }
+                .frame(width: w, height: h)
+                .ignoresSafeArea()
+            )
+        }
 
-                if hasArt {
-                    // B1) Soft vertical wash — primary → secondary → black
+        let stack = ZStack {
+            Color.black
+                .ignoresSafeArea()
+
+            if hasArt {
+                LinearGradient(
+                    colors: [
+                        c0.opacity(0.72),
+                        c1.opacity(0.42),
+                        c2.opacity(0.22),
+                        Color.black.opacity(0.92)
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .ignoresSafeArea()
+
+                RadialGradient(
+                    colors: [
+                        c0.opacity(0.88),
+                        c1.opacity(0.40),
+                        Color.clear
+                    ],
+                    center: UnitPoint(x: 0.5, y: 0.30),
+                    startRadius: 20,
+                    endRadius: max(h * 0.58, 340)
+                )
+                .ignoresSafeArea()
+                .scaleEffect(x: 1.15, y: 1.0, anchor: .center)
+
+                RadialGradient(
+                    colors: [c2.opacity(0.55), Color.clear],
+                    center: UnitPoint(x: 0.05, y: 0.62),
+                    startRadius: 8,
+                    endRadius: max(w * 0.75, 260)
+                )
+                .ignoresSafeArea()
+
+                RadialGradient(
+                    colors: [c3.opacity(0.48), Color.clear],
+                    center: UnitPoint(x: 0.95, y: 0.16),
+                    startRadius: 6,
+                    endRadius: max(w * 0.65, 240)
+                )
+                .ignoresSafeArea()
+
+                // Live Material is a continuous GPU cost — drop under heat / Reduce Transparency.
+                if reduceTransparency || PerformanceMemory.prefersCheapChrome {
+                    Color.black.opacity(0.34)
+                        .ignoresSafeArea()
+                } else {
+                    Rectangle()
+                        .fill(.ultraThinMaterial)
+                        .opacity(0.30)
+                        .ignoresSafeArea()
+                    Color.black.opacity(0.14)
+                        .ignoresSafeArea()
+                }
+
+                VStack(spacing: 0) {
+                    LinearGradient(
+                        colors: [immersiveInk.opacity(0.06), Color.clear],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                    .frame(height: 56)
+                    Spacer(minLength: 0)
+                }
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
+
+                VStack(spacing: 0) {
+                    Spacer(minLength: 0)
                     LinearGradient(
                         colors: [
-                            c0.opacity(0.72),
-                            c1.opacity(0.42),
-                            c2.opacity(0.22),
-                            Color.black.opacity(0.92)
+                            Color.clear,
+                            Color.black.opacity(0.22),
+                            Color.black.opacity(0.58),
+                            Color.black.opacity(0.84)
                         ],
                         startPoint: .top,
                         endPoint: .bottom
                     )
-                    .ignoresSafeArea()
-
-                    // B2) Cover-centered bloom (behind hero art)
-                    RadialGradient(
-                        colors: [
-                            c0.opacity(0.88),
-                            c1.opacity(0.40),
-                            Color.clear
-                        ],
-                        center: UnitPoint(x: 0.5, y: 0.30),
-                        startRadius: 20,
-                        endRadius: max(h * 0.58, 340)
-                    )
-                    .ignoresSafeArea()
-                    .scaleEffect(x: 1.15, y: 1.0, anchor: .center)
-
-                    // B3) Corner accents — second / third hues, soft (no harsh plusLighter)
-                    RadialGradient(
-                        colors: [c2.opacity(0.55), Color.clear],
-                        center: UnitPoint(x: 0.05, y: 0.62),
-                        startRadius: 8,
-                        endRadius: max(w * 0.75, 260)
-                    )
-                    .ignoresSafeArea()
-
-                    RadialGradient(
-                        colors: [c3.opacity(0.48), Color.clear],
-                        center: UnitPoint(x: 0.95, y: 0.16),
-                        startRadius: 6,
-                        endRadius: max(w * 0.65, 240)
-                    )
-                    .ignoresSafeArea()
-
-                    // C) Light frost — keep album color vivid; type still reads via bottom scrim
-                    if reduceTransparency {
-                        Color.black.opacity(0.34)
-                            .ignoresSafeArea()
-                    } else {
-                        Rectangle()
-                            .fill(.ultraThinMaterial)
-                            .opacity(0.30)
-                            .ignoresSafeArea()
-                        Color.black.opacity(0.14)
-                            .ignoresSafeArea()
-                    }
-
-                    // D) Top sheen (warm, not cool white)
-                    VStack(spacing: 0) {
-                        LinearGradient(
-                            colors: [
-                                immersiveInk.opacity(0.06),
-                                Color.clear
-                            ],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                        .frame(height: 56)
-                        Spacer(minLength: 0)
-                    }
-                    .ignoresSafeArea()
-                    .allowsHitTesting(false)
-
-                    // E) Bottom readability gradient (transport / actions)
-                    VStack(spacing: 0) {
-                        Spacer(minLength: 0)
-                        LinearGradient(
-                            colors: [
-                                Color.clear,
-                                Color.black.opacity(0.22),
-                                Color.black.opacity(0.58),
-                                Color.black.opacity(0.84)
-                            ],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                        .frame(height: h * 0.40)
-                    }
-                    .ignoresSafeArea()
-                    .allowsHitTesting(false)
-                } else {
-                    // No art: subtle accent breath so pure black isn't flat empty
-                    RadialGradient(
-                        colors: [
-                            theme.accent.opacity(0.16),
-                            Color.clear
-                        ],
-                        center: UnitPoint(x: 0.5, y: 0.28),
-                        startRadius: 10,
-                        endRadius: max(h * 0.5, 300)
-                    )
-                    .ignoresSafeArea()
+                    .frame(height: h * 0.40)
                 }
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
+            } else {
+                RadialGradient(
+                    colors: [theme.accent.opacity(0.16), Color.clear],
+                    center: UnitPoint(x: 0.5, y: 0.28),
+                    startRadius: 10,
+                    endRadius: max(h * 0.5, 300)
+                )
+                .ignoresSafeArea()
             }
+        }
+
+        // drawingGroup is a GPU cache — skip when phone is already warm / LPM (saves heat).
+        let plate = stack.frame(width: w, height: h)
+        if PerformanceMemory.prefersCheapChrome || reduceTransparency {
+            return AnyView(plate)
+        }
+        return AnyView(plate.drawingGroup(opaque: true, colorMode: .nonLinear))
+    }
+
+    /// Sync hero + backdrop when the track changes. Previous bug: `heroImage` was only set
+    /// when nil, so skip/next left the full player stuck on the previous cover (lock-screen OK).
+    private func applyTrackArtwork(forceHeroReload: Bool) {
+        seedBackdropFromVisuals(replaceHero: true)
+        refreshCachedAtmosphere()
+        if forceHeroReload {
+            loadHeroArt(maxSide: 380)
         }
     }
 
-    private func seedBackdropFromVisuals() {
-        if let thumb = artworkVisuals.thumb {
-            if backdropImage == nil || heroTrackID != artworkVisuals.trackID {
+    private func clearHeroArtwork() {
+        var t = Transaction()
+        t.disablesAnimations = true
+        withTransaction(t) {
+            backdropImage = nil
+            heroImage = nil
+            heroTrackID = nil
+            cachedAtmosLite = []
+            cachedAtmosFull = []
+            cachedAtmosTrackID = nil
+        }
+    }
+
+    private func seedBackdropFromVisuals(replaceHero: Bool = true) {
+        let trackID = artworkVisuals.trackID ?? player.currentTrack?.id
+        if let thumb = artworkVisuals.thumb
+            ?? player.currentTrack.flatMap({ ArtworkImageCache.image(trackID: $0.id, data: $0.artworkData) }) {
+            let trackChanged = heroTrackID != trackID
+            if trackChanged || backdropImage == nil || (replaceHero && heroImage == nil) {
                 var t = Transaction()
                 t.disablesAnimations = true
                 withTransaction(t) {
                     backdropImage = thumb
-                    if heroImage == nil { heroImage = thumb }
-                    heroTrackID = artworkVisuals.trackID
+                    // Always replace hero on track change — never keep previous song's UIImage.
+                    if replaceHero || trackChanged || heroImage == nil {
+                        heroImage = thumb
+                    }
+                    heroTrackID = trackID
                 }
             }
-        } else if artworkVisuals.trackID == nil {
-            backdropImage = nil
-            heroImage = nil
-            heroTrackID = nil
+        } else if trackID == nil {
+            clearHeroArtwork()
+        } else {
+            // New track with no thumb yet — drop stale cover so we don't show the previous song.
+            if heroTrackID != trackID {
+                var t = Transaction()
+                t.disablesAnimations = true
+                withTransaction(t) {
+                    heroImage = nil
+                    backdropImage = nil
+                    heroTrackID = trackID
+                }
+            }
         }
     }
 
     private func loadHeroArt(maxSide: CGFloat) {
         guard let track = player.currentTrack else { return }
-        if heroTrackID != track.id {
-            let thumb = artworkVisuals.thumb
-                ?? ArtworkImageCache.image(trackID: track.id, data: track.artworkData)
+        let trackID = track.id
+
+        // Immediate thumb swap so UI never lags a full-res decode.
+        let thumb = artworkVisuals.thumb
+            ?? ArtworkImageCache.image(trackID: track.id, data: track.artworkData)
+        if heroTrackID != trackID || heroImage == nil, let thumb {
             var t = Transaction()
             t.disablesAnimations = true
             withTransaction(t) {
                 heroImage = thumb
-                if let thumb { backdropImage = thumb }
-                heroTrackID = track.id
+                backdropImage = thumb
+                heroTrackID = trackID
+            }
+        } else if heroTrackID != trackID {
+            var t = Transaction()
+            t.disablesAnimations = true
+            withTransaction(t) {
+                heroTrackID = trackID
             }
         }
 
         heroLoadTask?.cancel()
-        let trackID = track.id
-        let thumb = track.artworkData
+        let thumbData = track.artworkData
         let url = track.resolvedURL()
         heroLoadTask = Task {
             let img = await ArtworkImageCache.heroImage(
                 trackID: trackID,
-                thumbData: thumb,
+                thumbData: thumbData,
                 fileURL: url,
                 maxPointSide: maxSide
             )
@@ -562,6 +674,7 @@ struct ImmersivePlayerView: View {
                     withTransaction(t) {
                         heroImage = img
                         backdropImage = img
+                        heroTrackID = trackID
                     }
                 }
             }
@@ -723,8 +836,8 @@ struct ImmersivePlayerView: View {
                 .foregroundStyle(immersiveInk)
                 .background {
                     RoundedRectangle(cornerRadius: controlCorner, style: .continuous)
-                        .fill(.ultraThinMaterial)
-                        .environment(\.colorScheme, .dark)
+                        // Prefer solid glass-tint over live Material on controls (cheaper during open settle).
+                        .fill(immersiveInk.opacity(0.12))
                         .overlay {
                             RoundedRectangle(cornerRadius: controlCorner, style: .continuous)
                                 .fill(

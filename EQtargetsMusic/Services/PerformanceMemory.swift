@@ -61,22 +61,32 @@ enum PerformanceMemory {
         log.info("purged image/palette caches (\(reason, privacy: .public))")
     }
 
-    /// Slightly larger IO buffer under heat / LPM (less wakeups, tiny latency cost).
-    /// Cool + plugged-in path stays ~50 ms for dual-EQ responsiveness.
+    /// Larger IO buffer → fewer audio wakeups (main thermal lever after EQ bypass).
+    /// Cool stays snappy enough for dual-EQ; fair/heat step up quickly.
     static var preferredIOBufferDuration: TimeInterval {
-        if ProcessInfo.processInfo.isLowPowerModeEnabled { return 0.080 }
+        if ProcessInfo.processInfo.isLowPowerModeEnabled { return 0.100 }
         switch ProcessInfo.processInfo.thermalState {
-        case .serious, .critical: return 0.100
-        case .fair: return 0.065
-        default: return 0.050
+        case .serious, .critical: return 0.120
+        case .fair: return 0.080
+        default: return 0.060
         }
     }
 
     static var preferredBackgroundIOBufferDuration: TimeInterval {
-        if ProcessInfo.processInfo.isLowPowerModeEnabled { return 0.120 }
+        if ProcessInfo.processInfo.isLowPowerModeEnabled { return 0.140 }
         switch ProcessInfo.processInfo.thermalState {
-        case .serious, .critical: return 0.140
+        case .serious, .critical: return 0.160
+        case .fair: return 0.120
         default: return 0.100
+        }
+    }
+
+    /// True when UI should drop expensive Materials / drawingGroup (phone already warm).
+    static var prefersCheapChrome: Bool {
+        if ProcessInfo.processInfo.isLowPowerModeEnabled { return true }
+        switch ProcessInfo.processInfo.thermalState {
+        case .fair, .serious, .critical: return true
+        default: return false
         }
     }
 

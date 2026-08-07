@@ -11,6 +11,7 @@
 
 import SwiftUI
 import UIKit
+import Combine
 
 enum AppAccentTheme: String, CaseIterable, Identifiable, Codable {
     case blue
@@ -273,6 +274,16 @@ extension View {
         modifier(GlassCard(corner: corner))
     }
 
+    /// Frosted glass sheet chrome — content behind bleeds through (Settings, Crossfade, pickers).
+    func frostedBleedSheet(accent: Color) -> some View {
+        self
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.visible)
+            .presentationCornerRadius(32)
+            .presentationBackground { FrostedBleedSheetBackground(accent: accent) }
+            .presentationBackgroundInteraction(.enabled(upThrough: .medium))
+    }
+
     /// Wide iOS 26/27 chrome used on every `NavigationStack` screen:
     /// - Short progressive blur under the status/title band (~140–170pt, not half-screen)
     /// - Title (“Music”, etc.) hides when scrolling down, returns when scrolling back up
@@ -314,7 +325,7 @@ extension View {
     }
 }
 
-// MARK: - Wide nav chrome (half-window blur + collapsing title)
+// MARK: - Wide nav chrome (collapsing title — must NOT reset ScrollView)
 
 private struct GrokNavChromeModifier<Trailing: View>: ViewModifier {
     let title: String
@@ -325,32 +336,42 @@ private struct GrokNavChromeModifier<Trailing: View>: ViewModifier {
     @Environment(\.grokTheme) private var theme
     @Environment(\.grokOpenMenu) private var openMenu
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.colorScheme) private var scheme
 
-    /// Title visible near top; false after user scrolls content up.
+    /// Title fades on scroll; only written when threshold crossed (hysteresis).
     @State private var titleVisible = true
 
-    /// Hysteresis avoids flicker at the threshold.
-    private let hideTitleAfter: CGFloat = 28
-    private let showTitleBelow: CGFloat = 10
+    private let hideAfter: CGFloat = 36
+    private let showBelow: CGFloat = 8
 
     func body(content: Content) -> some View {
         content
-            // Empty system title — principal title can fade on scroll.
             .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
-            // Let iOS 26 draw **system Liquid Glass** on the bar (Grok / Messages style).
-            // Hiding the bar or forcing a clear UIKit appearance kills real frosted glass.
-            // Visible so system Liquid Glass can render (hidden = no frosted bar).
             .toolbarBackgroundVisibility(.visible, for: .navigationBar)
-            // Progressive frosted edge where content scrolls under chrome (Liquid Glass).
             .scrollEdgeEffectStyle(.soft, for: .top)
-            .environment(\.grokScrollOffsetHandler, handleScrollOffset)
+            .environment(\.grokScrollOffsetHandler, { [hideAfter, showBelow] y in
+                // Mutation goes through a MainActor hop so we never animate the ScrollView layout.
+                Task { @MainActor in
+                    // Read/write @State via the modifier instance is invalid from escaping closure.
+                    // Preference-based path is used instead (see onPreferenceChange below).
+                    GrokScrollOffsetBus.shared.publish(y)
+                }
+            })
+            .onReceive(GrokScrollOffsetBus.shared.publisher) { y in
+                if titleVisible, y > hideAfter {
+                    // No transaction animation on the host — toolbar label animates itself.
+                    var t = Transaction()
+                    t.disablesAnimations = true
+                    withTransaction(t) { titleVisible = false }
+                } else if !titleVisible, y < showBelow {
+                    var t = Transaction()
+                    t.disablesAnimations = true
+                    withTransaction(t) { titleVisible = true }
+                }
+            }
             .toolbar {
                 if showsMenu, let openMenu {
                     ToolbarItem(placement: .topBarLeading) {
-                        // Plain style — iOS 26 already puts toolbar items in a Liquid Glass
-                        // group. `.buttonStyle(.glass)` stacks a second capsule (bubble-in-bubble).
                         Button(action: openMenu) {
                             Image(systemName: "line.3.horizontal")
                                 .font(.app(size: 17, weight: .semibold))
@@ -367,62 +388,98 @@ private struct GrokNavChromeModifier<Trailing: View>: ViewModifier {
                         .lineLimit(1)
                         .minimumScaleFactor(0.85)
                         .opacity(titleVisible ? 1 : 0)
-                        .offset(y: titleVisible ? 0 : -8)
+                        .offset(y: titleVisible ? 0 : -6)
+                        .animation(
+                            reduceMotion ? nil : .easeInOut(duration: 0.18),
+                            value: titleVisible
+                        )
                         .accessibilityHidden(!titleVisible)
                         .accessibilityAddTraits(.isHeader)
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    // Glass capsule for trailing controls (matches system Liquid Glass chrome).
                     trailing()
                         .tint(theme.accent)
                 }
             }
             .navigationBarBackButtonHidden(false)
-            // Soft frosted veil under the system glass bar (short — not half-screen).
-            // Complements scroll-edge glass; mask dissolves so there’s no hard line.
-            .overlay(alignment: .top) {
+            // Background (not overlay): veil must not steal scroll gestures.
+            .background(alignment: .top) {
                 GeometryReader { geo in
                     let status = max(geo.safeAreaInsets.top, 47)
                     let fadeHeight = status + 44 + 72
                     GrokLiquidGlassHeaderVeil(height: fadeHeight)
                         .frame(width: geo.size.width, height: fadeHeight, alignment: .top)
-                        .allowsHitTesting(false)
                 }
                 .frame(height: 190, alignment: .top)
                 .allowsHitTesting(false)
                 .ignoresSafeArea(edges: .top)
             }
-            .animation(
-                reduceMotion ? nil : .easeInOut(duration: 0.22),
-                value: titleVisible
-            )
-            .accessibilityElement(children: .contain)
             .accessibilityLabel(title)
     }
+}
 
-    private func handleScrollOffset(_ y: CGFloat) {
-        if titleVisible, y > hideTitleAfter {
-            titleVisible = false
-        } else if !titleVisible, y < showTitleBelow {
-            titleVisible = true
-        }
+/// Lightweight bus so scroll views can report offset without rebinding Environment every frame.
+@MainActor
+private final class GrokScrollOffsetBus: ObservableObject {
+    static let shared = GrokScrollOffsetBus()
+    private let subject = PassthroughSubject<CGFloat, Never>()
+    var publisher: AnyPublisher<CGFloat, Never> { subject.eraseToAnyPublisher() }
+    private var last: CGFloat = -1
+
+    func publish(_ y: CGFloat) {
+        guard abs(y - last) > 0.5 else { return }
+        last = y
+        subject.send(y)
     }
 }
 
 // MARK: - Scroll tracking (every List / ScrollView)
 
 private struct GrokScrollEdgeBlurModifier: ViewModifier {
-    @Environment(\.grokScrollOffsetHandler) private var reportOffset
-
     func body(content: Content) -> some View {
         content
-            // Soft Liquid Glass scroll-edge (the frosted progressive blur under bars).
             .scrollEdgeEffectStyle(.soft, for: .top)
             .onScrollGeometryChange(for: CGFloat.self) { geometry in
-                max(0, geometry.contentOffset.y + geometry.contentInsets.top)
+                // contentOffset only — contentInsets + soft edge was fighting scroll position.
+                max(0, geometry.contentOffset.y)
             } action: { _, newOffset in
-                reportOffset?(newOffset)
+                GrokScrollOffsetBus.shared.publish(newOffset)
             }
+    }
+}
+
+// MARK: - Frosted sheet background (Settings, Crossfade, pickers)
+
+/// Blurs content under a modal + soft accent wash so the sheet feels like Liquid Glass.
+struct FrostedBleedSheetBackground: View {
+    let accent: Color
+    @Environment(\.grokTheme) private var theme
+
+    var body: some View {
+        ZStack {
+            Rectangle().fill(.ultraThinMaterial)
+            Rectangle()
+                .fill(.thinMaterial)
+                .opacity(theme.isDark ? 0.38 : 0.28)
+            LinearGradient(
+                colors: [
+                    accent.opacity(theme.isDark ? 0.22 : 0.16),
+                    Color.clear,
+                    theme.background.opacity(theme.isDark ? 0.20 : 0.12)
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            LinearGradient(
+                colors: [
+                    Color.white.opacity(theme.isDark ? 0.12 : 0.40),
+                    Color.white.opacity(0)
+                ],
+                startPoint: .top,
+                endPoint: .center
+            )
+        }
+        .ignoresSafeArea()
     }
 }
 

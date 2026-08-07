@@ -21,6 +21,8 @@ struct MiniPlayerArtFrameKey: PreferenceKey {
 
 extension View {
     /// Publish this view’s global frame as the MiniPlayer artwork source rect.
+    /// Preference is only written when the rect actually moves (avoids thrash
+    /// while the mini pill’s opacity/content fade updates during expand).
     func reportMiniPlayerArtFrame() -> some View {
         background {
             GeometryReader { geo in
@@ -28,5 +30,6 @@ extension View {
                     .preference(key: MiniPlayerArtFrameKey.self, value: geo.frame(in: .global))
             }
         }
+        // PreferenceKey.reduce already drops empty frames; host freezes during drag.
     }
 }

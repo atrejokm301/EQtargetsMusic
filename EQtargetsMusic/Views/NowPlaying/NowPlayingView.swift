@@ -15,150 +15,23 @@ struct NowPlayingView: View {
     @State private var showImporter = false
     @State private var showSystemWideInfo = false
     @State private var showAutoMixSheet = false
-    @State private var isScrubbing = false
-    @State private var scrubTime: TimeInterval = 0
-    /// Local progress — does not force library tabs to rebuild on every tick.
-    @State private var displayTime: TimeInterval = 0
 
     var body: some View {
         ScrollView {
             VStack(spacing: 20) {
                 systemWideBanner
 
-                // Hero: artwork left + title stack
-                HStack(alignment: .center, spacing: 16) {
-                    artwork
-                        .frame(width: 120, height: 120)
-                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                        .shadow(color: .black.opacity(0.35), radius: 16, y: 8)
+                // Hero — track metadata only (does not tick with progress).
+                NowPlayingHeroCard()
 
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text(player.currentTrack?.title ?? "Nothing Playing")
-                            .font(.app(size: 22, weight: .bold, design: .rounded))
-                            .foregroundStyle(theme.primaryText)
-                            .lineLimit(2)
-                        Text(player.currentTrack?.artist ?? "Select a track from Music")
-                            .font(.app(size: 15, weight: .medium, design: .rounded))
-                            .foregroundStyle(theme.secondaryText)
-                            .lineLimit(1)
-                        Text(player.currentTrack?.album ?? "")
-                            .font(.app(size: 13, weight: .regular, design: .rounded))
-                            .foregroundStyle(theme.tertiaryText)
-                            .lineLimit(1)
-                    }
-                    Spacer(minLength: 0)
-                }
-                .padding(16)
-                .glassCard(corner: 20)
-                .contentShape(Rectangle())
-                .gesture(
-                    DragGesture(minimumDistance: 30, coordinateSpace: .local)
-                        .onEnded { value in
-                            if value.translation.width < -50 {
-                                UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                                player.skipForward()
-                            } else if value.translation.width > 50 {
-                                UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                                player.skipBackward()
-                            }
-                        }
-                )
+                // Transport owns progress ticks so EQ Menus don’t rebuild while playing.
+                NowPlayingTransportCard()
 
-                // Transport
-                VStack(spacing: 12) {
-                    // Scrubbing bar + time labels (system Slider pill)
-                    VStack(spacing: 8) {
-                        Slider(
-                            value: Binding(
-                                get: { isScrubbing ? scrubTime : displayTime },
-                                set: { scrubTime = $0 }
-                            ),
-                            in: 0 ... max(player.duration, 0.001),
-                            onEditingChanged: { editing in
-                                if editing {
-                                    if !isScrubbing {
-                                        scrubTime = displayTime
-                                    }
-                                    isScrubbing = true
-                                } else {
-                                    let target = scrubTime
-                                    player.seek(to: target)
-                                    displayTime = target
-                                    scrubTime = target
-                                    isScrubbing = false
-                                }
-                            }
-                        )
-                        .tint(theme.accent)
-                        .disabled(player.currentTrack == nil || player.duration <= 0)
-                        .transaction { $0.animation = nil }
-                        .animation(nil, value: isScrubbing)
-                        .animation(nil, value: displayTime)
-
-                        HStack {
-                            Text(formatTime(isScrubbing ? scrubTime : displayTime))
-                            Spacer()
-                            Text(formatTime(player.duration))
-                        }
-                        .font(.app(size: 11, weight: .medium, design: .monospaced))
-                        .foregroundStyle(theme.tertiaryText)
-                        .transaction { $0.animation = nil }
-                    }
-
-                    HStack(spacing: 24) {
-                        // Shuffle button (cycles Off -> Standard -> Banger)
-                        Button {
-                            player.cycleShuffleMode()
-                        } label: {
-                            Image(systemName: player.shuffleMode.iconName)
-                                .font(.app(size: 20, weight: .semibold))
-                                .foregroundStyle(player.shuffleMode == .off ? theme.tertiaryText : theme.accent)
-                                .symbolVariant(player.shuffleMode == .banger ? .fill : .none)
-                        }
-                        .frame(minWidth: 44, minHeight: 44)
-                        .accessibilityLabel("Shuffle \(player.shuffleMode.rawValue)")
-
-                        Button { player.skipBackward() } label: {
-                            Image(systemName: "backward.fill")
-                                .font(.app(size: 24))
-                        }
-                        .frame(minWidth: 44, minHeight: 44)
-
-                        Button { player.togglePlayPause() } label: {
-                            Image(systemName: player.isPlaying ? "pause.circle.fill" : "play.circle.fill")
-                                .font(.app(size: 60))
-                                .symbolRenderingMode(.hierarchical)
-                                .foregroundStyle(theme.accent)
-                        }
-                        .frame(minWidth: 60, minHeight: 60)
-
-                        Button { player.skipForward() } label: {
-                            Image(systemName: "forward.fill")
-                                .font(.app(size: 24))
-                        }
-                        .frame(minWidth: 44, minHeight: 44)
-
-                        // Repeat button (cycles Off -> Repeat All -> Repeat One)
-                        Button {
-                            player.cycleRepeatMode()
-                        } label: {
-                            Image(systemName: player.repeatMode.iconName)
-                                .font(.app(size: 20, weight: .semibold))
-                                .foregroundStyle(player.repeatMode == .off ? theme.tertiaryText : theme.accent)
-                                .opacity(player.repeatMode == .off ? 0.55 : 1)
-                        }
-                        .frame(minWidth: 44, minHeight: 44)
-                        .accessibilityLabel("Repeat \(player.repeatMode.rawValue)")
-                    }
-                    .foregroundStyle(theme.primaryText)
-                }
-                .padding(16)
-                .glassCard(corner: 20)
-
-                // EQ section at bottom
+                // EQ — isolated; must not sit under progressSubject updates.
                 EQControlsView(
                     dual: $player.dual,
-                    onImportAutoEQ: { showImporter = true }
+                    onImportAutoEQ: { showImporter = true },
+                    onToast: { player.showToast($0) }
                 )
                 .padding(16)
                 .glassCard(corner: 20)
@@ -180,16 +53,6 @@ struct NowPlayingView: View {
                     .contentShape(Rectangle())
             }
             .accessibilityLabel("Crossfade settings")
-        }
-        .onAppear {
-            displayTime = player.currentTime
-        }
-        .onChange(of: player.currentTrack?.id) { _ in
-            displayTime = player.currentTime
-        }
-        .onReceive(player.progressSubject) { t in
-            guard !isScrubbing else { return }
-            displayTime = t
         }
         .sheet(isPresented: $showAutoMixSheet) {
             AutoMixSettingsSheet()
@@ -233,6 +96,76 @@ struct NowPlayingView: View {
         .buttonStyle(.plain)
     }
 
+    private func handleImport(_ result: Result<[URL], Error>) {
+        switch result {
+        case .failure(let err):
+            player.showToast(err.localizedDescription)
+        case .success(let urls):
+            guard let url = urls.first else { return }
+            let access = url.startAccessingSecurityScopedResource()
+            defer { if access { url.stopAccessingSecurityScopedResource() } }
+            do {
+                let text = try String(contentsOf: url, encoding: .utf8)
+                let layer = try AutoEQParser.parse(text: text)
+                player.dual.loadTarget(layer, keepFineTune: true)
+                // Save into the shared store so the Target menu updates immediately.
+                let baseName = url.deletingPathExtension().lastPathComponent
+                let name = baseName.isEmpty ? "Imported Target" : baseName
+                presetStore.saveTargetPreset(name: name, layer: layer)
+                player.showToast("Target “\(name)” loaded")
+            } catch {
+                player.showToast(error.localizedDescription)
+            }
+        }
+    }
+}
+
+// MARK: - Hero (track only — no progress ticks)
+
+private struct NowPlayingHeroCard: View {
+    @EnvironmentObject private var player: AudioPlayerEngine
+    @Environment(\.grokTheme) private var theme
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 16) {
+            artwork
+                .frame(width: 120, height: 120)
+                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .shadow(color: .black.opacity(0.35), radius: 16, y: 8)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text(player.currentTrack?.title ?? "Nothing Playing")
+                    .font(.app(size: 22, weight: .bold, design: .rounded))
+                    .foregroundStyle(theme.primaryText)
+                    .lineLimit(2)
+                Text(player.currentTrack?.artist ?? "Select a track from Music")
+                    .font(.app(size: 15, weight: .medium, design: .rounded))
+                    .foregroundStyle(theme.secondaryText)
+                    .lineLimit(1)
+                Text(player.currentTrack?.album ?? "")
+                    .font(.app(size: 13, weight: .regular, design: .rounded))
+                    .foregroundStyle(theme.tertiaryText)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(16)
+        .glassCard(corner: 20)
+        .contentShape(Rectangle())
+        .gesture(
+            DragGesture(minimumDistance: 30, coordinateSpace: .local)
+                .onEnded { value in
+                    if value.translation.width < -50 {
+                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                        player.skipForward()
+                    } else if value.translation.width > 50 {
+                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                        player.skipBackward()
+                    }
+                }
+        )
+    }
+
     @ViewBuilder
     private var artwork: some View {
         if let data = player.currentTrack?.artworkData, let img = UIImage(data: data) {
@@ -252,27 +185,104 @@ struct NowPlayingView: View {
             }
         }
     }
+}
 
-    private func handleImport(_ result: Result<[URL], Error>) {
-        switch result {
-        case .failure(let err):
-            player.toast = err.localizedDescription
-        case .success(let urls):
-            guard let url = urls.first else { return }
-            let access = url.startAccessingSecurityScopedResource()
-            defer { if access { url.stopAccessingSecurityScopedResource() } }
-            do {
-                let text = try String(contentsOf: url, encoding: .utf8)
-                let layer = try AutoEQParser.parse(text: text)
-                player.dual.loadTarget(layer, keepFineTune: true)
-                // Save into the shared store so the Target menu updates immediately.
-                let baseName = url.deletingPathExtension().lastPathComponent
-                let name = baseName.isEmpty ? "Imported Target" : baseName
-                presetStore.saveTargetPreset(name: name, layer: layer)
-                player.toast = "Target “\(name)” loaded"
-            } catch {
-                player.toast = error.localizedDescription
+// MARK: - Transport (owns progress ticks so EQ Menus stay stable while playing)
+
+private struct NowPlayingTransportCard: View {
+    @EnvironmentObject private var player: AudioPlayerEngine
+    @Environment(\.grokTheme) private var theme
+
+    @State private var isScrubbing = false
+    @State private var scrubTime: TimeInterval = 0
+    @State private var displayTime: TimeInterval = 0
+
+    var body: some View {
+        VStack(spacing: 12) {
+            VStack(spacing: 8) {
+                Slider(
+                    value: Binding(
+                        get: { isScrubbing ? scrubTime : displayTime },
+                        set: { scrubTime = $0 }
+                    ),
+                    in: 0 ... max(player.duration, 0.001),
+                    onEditingChanged: { editing in
+                        if editing {
+                            if !isScrubbing { scrubTime = displayTime }
+                            isScrubbing = true
+                        } else {
+                            let target = scrubTime
+                            player.seek(to: target)
+                            displayTime = target
+                            scrubTime = target
+                            isScrubbing = false
+                        }
+                    }
+                )
+                .tint(theme.accent)
+                .disabled(player.currentTrack == nil || player.duration <= 0)
+                .transaction { $0.animation = nil }
+                .animation(nil, value: isScrubbing)
+                .animation(nil, value: displayTime)
+
+                HStack {
+                    Text(formatTime(isScrubbing ? scrubTime : displayTime))
+                    Spacer()
+                    Text(formatTime(player.duration))
+                }
+                .font(.app(size: 11, weight: .medium, design: .monospaced))
+                .foregroundStyle(theme.tertiaryText)
+                .transaction { $0.animation = nil }
             }
+
+            HStack(spacing: 24) {
+                Button { player.cycleShuffleMode() } label: {
+                    Image(systemName: player.shuffleMode.iconName)
+                        .font(.app(size: 20, weight: .semibold))
+                        .foregroundStyle(player.shuffleMode == .off ? theme.tertiaryText : theme.accent)
+                        .symbolVariant(player.shuffleMode == .banger ? .fill : .none)
+                }
+                .frame(minWidth: 44, minHeight: 44)
+                .accessibilityLabel("Shuffle \(player.shuffleMode.rawValue)")
+
+                Button { player.skipBackward() } label: {
+                    Image(systemName: "backward.fill").font(.app(size: 24))
+                }
+                .frame(minWidth: 44, minHeight: 44)
+
+                Button { player.togglePlayPause() } label: {
+                    Image(systemName: player.isPlaying ? "pause.circle.fill" : "play.circle.fill")
+                        .font(.app(size: 60))
+                        .symbolRenderingMode(.hierarchical)
+                        .foregroundStyle(theme.accent)
+                }
+                .frame(minWidth: 60, minHeight: 60)
+
+                Button { player.skipForward() } label: {
+                    Image(systemName: "forward.fill").font(.app(size: 24))
+                }
+                .frame(minWidth: 44, minHeight: 44)
+
+                Button { player.cycleRepeatMode() } label: {
+                    Image(systemName: player.repeatMode.iconName)
+                        .font(.app(size: 20, weight: .semibold))
+                        .foregroundStyle(player.repeatMode == .off ? theme.tertiaryText : theme.accent)
+                        .opacity(player.repeatMode == .off ? 0.55 : 1)
+                }
+                .frame(minWidth: 44, minHeight: 44)
+                .accessibilityLabel("Repeat \(player.repeatMode.rawValue)")
+            }
+            .foregroundStyle(theme.primaryText)
+        }
+        .padding(16)
+        .glassCard(corner: 20)
+        .onAppear { displayTime = player.currentTime }
+        .onChange(of: player.currentTrack?.id) { _ in
+            displayTime = player.currentTime
+        }
+        .onReceive(player.progressSubject) { t in
+            guard !isScrubbing else { return }
+            displayTime = t
         }
     }
 
@@ -471,16 +481,23 @@ struct AutoMixSettingsSheet: View {
                         .padding(.horizontal, 4)
                 }
                 .padding(16)
+                .padding(.bottom, 28)
             }
-            .grokScrollEdgeBlur()
-            .background { LiquidGlassBackground() }
-            .grokStyleNavigationChrome(title: "Crossfade", showsMenu: false) {
-                Button("Done") { dismiss() }
-                    .font(.app(size: 15, weight: .bold, design: .rounded))
-                    .foregroundStyle(theme.accent)
-                    .accessibilityLabel("Done")
+            .scrollIndicators(.visible)
+            .background(Color.clear)
+            .navigationTitle("Crossfade")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(.hidden, for: .navigationBar)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                        .font(.app(size: 16, weight: .bold, design: .rounded))
+                        .foregroundStyle(theme.accent)
+                        .accessibilityLabel("Done")
+                }
             }
         }
+        .frostedBleedSheet(accent: theme.accent)
     }
 
     private func curveHelpRow(title: String, body: String) -> some View {

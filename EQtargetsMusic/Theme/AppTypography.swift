@@ -2,7 +2,7 @@
 //  AppTypography.swift
 //  EQtargetsMusic
 //
-//  App-wide typeface: Google Sans Flex (bundled variable font).
+//  App-wide typeface: Inter Variable (bundled).
 //  Use Font.app(...) instead of Font.system(...) for UI chrome.
 //  Monospaced metrics (time, BPM) stay system monospaced for alignment.
 //
@@ -11,34 +11,72 @@ import SwiftUI
 import UIKit
 
 enum AppTypography {
-    /// PostScript name from the bundled TTF (`GoogleSansFlex-Regular`).
-    static let postScriptName = "GoogleSansFlex-Regular"
-    static let displayName = "Google Sans Flex"
+    /// Default PostScript name (Regular instance of Inter Variable).
+    static let postScriptName = "InterVariable"
+    static let displayName = "Inter"
 
     /// Register at launch (also listed in Info.plist UIAppFonts).
     static func registerIfNeeded() {
-        // UIAppFonts handles normal loading; this is a belt-and-suspenders for previews.
+        // UIAppFonts handles normal loading; belt-and-suspenders for previews.
         _ = UIFont(name: postScriptName, size: 16)
+        _ = UIFont(name: "InterVariable-Medium", size: 16)
+        _ = UIFont(name: "InterVariable-Bold", size: 16)
+    }
+
+    /// Named instance for a SwiftUI weight (Inter Variable ships discrete masters).
+    static func postScriptName(for weight: Font.Weight) -> String {
+        switch weight {
+        case .ultraLight: return "InterVariable-Thin"
+        case .thin: return "InterVariable-Thin"
+        case .light: return "InterVariable-Light"
+        case .regular: return "InterVariable"
+        case .medium: return "InterVariable-Medium"
+        case .semibold: return "InterVariable-SemiBold"
+        case .bold: return "InterVariable-Bold"
+        case .heavy: return "InterVariable-ExtraBold"
+        case .black: return "InterVariable-Black"
+        default: return "InterVariable"
+        }
+    }
+
+    static func postScriptName(forUIFontWeight weight: UIFont.Weight) -> String {
+        switch weight {
+        case .ultraLight: return "InterVariable-Thin"
+        case .thin: return "InterVariable-Thin"
+        case .light: return "InterVariable-Light"
+        case .regular: return "InterVariable"
+        case .medium: return "InterVariable-Medium"
+        case .semibold: return "InterVariable-SemiBold"
+        case .bold: return "InterVariable-Bold"
+        case .heavy: return "InterVariable-ExtraBold"
+        case .black: return "InterVariable-Black"
+        default: return "InterVariable"
+        }
     }
 
     static func font(size: CGFloat, weight: Font.Weight = .regular) -> Font {
-        // Variable-font weight via SwiftUI; falls back gracefully if unavailable.
-        Font.custom(postScriptName, size: size).weight(weight)
+        Font.custom(postScriptName(for: weight), size: size)
     }
 
     static func uiFont(size: CGFloat, weight: UIFont.Weight = .regular) -> UIFont {
-        guard let base = UIFont(name: postScriptName, size: size) else {
-            return .systemFont(ofSize: size, weight: weight)
+        let name = postScriptName(forUIFontWeight: weight)
+        if let font = UIFont(name: name, size: size) {
+            return font
         }
-        let traits: [UIFontDescriptor.TraitKey: Any] = [.weight: weight]
-        let desc = base.fontDescriptor.addingAttributes([.traits: traits])
-        return UIFont(descriptor: desc, size: size)
+        // Fallback: try Regular + traits, then system.
+        if let base = UIFont(name: postScriptName, size: size) {
+            let traits: [UIFontDescriptor.TraitKey: Any] = [.weight: weight]
+            let desc = base.fontDescriptor.addingAttributes([.traits: traits])
+            return UIFont(descriptor: desc, size: size)
+        }
+        return .systemFont(ofSize: size, weight: weight)
     }
 }
 
 extension Font {
-    /// App typeface (Google Sans Flex). Prefer this over `.system` for UI text.
+    /// App typeface (Inter). Prefer this over `.system` for UI text.
     /// Pass `design: .monospaced` to keep system mono for times / numeric columns.
+    /// `design: .rounded` still uses Inter (no separate rounded face).
     static func app(
         size: CGFloat,
         weight: Font.Weight = .regular,

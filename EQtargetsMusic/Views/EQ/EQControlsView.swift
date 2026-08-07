@@ -2,221 +2,162 @@
 //  EQControlsView.swift
 //  EQtargetsMusic
 //
-//  Target | Fine-Tune divider + 10-band controls + preamp −20…+20
+//  Now Playing: EQGraphView stays here + entry to the frosted EQ editor sheet.
+//  Detailed controls (profiles, segment, preamp, 10 vertical bands) live in EQEditorSheet.
+//  Dual EQ chain unchanged: Target → Fine-Tune.
 //
 
 import SwiftUI
+import AVFoundation
+
+// MARK: - Now Playing surface (graph stays put)
 
 struct EQControlsView: View {
     @Binding var dual: DualEQState
     var onImportAutoEQ: () -> Void
+    /// Optional toast when assigning devices (wired from Now Playing / player).
+    var onToast: ((String) -> Void)? = nil
 
     @Environment(\.grokTheme) private var theme
     @EnvironmentObject private var presetStore: EQPresetStore
+
+    @State private var showEQEditor = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            // Compact profile readout + open editor
+            HStack(spacing: 8) {
+                legendDot(theme.targetTint, presetStore.selectedTargetName)
+                legendDot(theme.accent, presetStore.selectedFineTuneName)
+                Spacer(minLength: 4)
+                if dual.isBypassed {
+                    Text("Bypassed")
+                        .font(.app(size: 11, weight: .bold, design: .rounded))
+                        .foregroundStyle(theme.danger)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Capsule().fill(theme.danger.opacity(0.14)))
+                }
+            }
+
+            // Graph stays exactly on Now Playing — not moved into the sheet.
+            EQGraphView(dual: dual)
+
+            Button {
+                showEQEditor = true
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "slider.vertical.3")
+                        .font(.app(size: 16, weight: .semibold))
+                        .foregroundStyle(theme.accent)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("EQ Controls")
+                            .font(.app(size: 15, weight: .bold, design: .rounded))
+                            .foregroundStyle(theme.primaryText)
+                        Text("Profiles, preamp & 10 bands")
+                            .font(.app(size: 12, weight: .medium, design: .rounded))
+                            .foregroundStyle(theme.secondaryText)
+                    }
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.up")
+                        .font(.app(size: 12, weight: .bold))
+                        .foregroundStyle(theme.tertiaryText)
+                }
+                .padding(14)
+                .glassCard(corner: 16)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Open EQ controls")
+            .accessibilityHint("Opens Target and Fine-Tune band editor")
+        }
+        .sheet(isPresented: $showEQEditor) {
+            EQEditorSheet(
+                dual: $dual,
+                onImportAutoEQ: {
+                    showEQEditor = false
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                        onImportAutoEQ()
+                    }
+                },
+                onToast: onToast
+            )
+            .environmentObject(presetStore)
+            .environment(\.grokTheme, theme)
+        }
+    }
+
+    private func legendDot(_ color: Color, _ title: String) -> some View {
+        HStack(spacing: 5) {
+            Capsule().fill(color).frame(width: 12, height: 3)
+            Text(title)
+                .font(.app(size: 11, weight: .semibold, design: .rounded))
+                .foregroundStyle(theme.secondaryText)
+                .lineLimit(1)
+        }
+    }
+}
+
+// MARK: - Frosted EQ editor sheet
+
+struct EQEditorSheet: View {
+    @Binding var dual: DualEQState
+    var onImportAutoEQ: () -> Void
+    var onToast: ((String) -> Void)? = nil
+
+    @Environment(\.grokTheme) private var theme
+    @EnvironmentObject private var presetStore: EQPresetStore
+    @Environment(\.dismiss) private var dismiss
 
     @State private var showSaveTargetAlert = false
     @State private var newTargetName = ""
     @State private var showSaveFineTuneAlert = false
     @State private var newFineTuneName = ""
+    @State private var showDeviceLinksSheet = false
+    @State private var showFineTunePickerSheet = false
+    @State private var showTargetPickerSheet = false
+
+    /// Controls (sliders / toggles) always follow the user’s accent theme.
+    /// Target vs Fine-Tune distinction stays on the segment + profile chips only — not pumpkin orange.
+    private var controlTint: Color {
+        theme.accent
+    }
+
+    /// Soft identity for the active layer chip / preamp label (Target = cool, Fine-Tune = accent).
+    private var layerIdentityTint: Color {
+        dual.editingLayer == .target ? theme.targetTint : theme.accent
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            // Header: Profile dropdowns above graph
-            VStack(spacing: 8) {
-                // Target profile selection
-                HStack(spacing: 8) {
-                    legendDot(theme.targetTint, "Target:")
-
-                    Menu {
-                        ForEach(presetStore.targetPresets) { preset in
-                            if !preset.isSystemDefault {
-                                Button(role: .destructive) {
-                                    presetStore.deleteTargetPreset(preset)
-                                } label: {
-                                    Label("Delete “\(preset.name)”", systemImage: "trash")
-                                }
-                            }
-                            Button {
-                                dual.target = preset.layer
-                                presetStore.selectedTargetName = preset.name
-                            } label: {
-                                HStack {
-                                    Text(preset.name)
-                                    if presetStore.selectedTargetName == preset.name {
-                                        Image(systemName: "checkmark")
-                                    }
-                                }
-                            }
-                        }
-
-                        Divider()
-
-                        Button(action: onImportAutoEQ) {
-                            Label("Import AutoEQ (.txt/.xml)...", systemImage: "doc.badge.plus")
-                        }
-                    } label: {
-                        HStack(spacing: 4) {
-                            Text(presetStore.selectedTargetName)
-                                .font(.app(size: 12, weight: .bold, design: .rounded))
-                                .lineLimit(1)
-                            Image(systemName: "chevron.down")
-                                .font(.app(size: 10, weight: .bold))
-                        }
-                        .foregroundStyle(theme.targetTint)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(Capsule().fill(theme.targetTint.opacity(0.15)))
-                    }
-
-                    Spacer()
-
-                    Button(action: onImportAutoEQ) {
-                        Image(systemName: "doc.badge.plus")
-                            .font(.app(size: 12, weight: .semibold))
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .tint(theme.targetTint)
-
-                    Button {
-                        newTargetName = presetStore.selectedTargetName
-                        showSaveTargetAlert = true
-                    } label: {
-                        Label("Save", systemImage: "bookmark.fill")
-                            .font(.app(size: 11, weight: .bold, design: .rounded))
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-                    .tint(theme.targetTint)
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 10) {
+                    profileHeaderCard
+                    liquidGlassSegmentedSwitch
+                    preampCard
+                    bandsSection
+                    utilityRow
                 }
-
-                // Fine-Tune profile selection + Save button
-                HStack(spacing: 8) {
-                    legendDot(theme.fineTint, "Fine-Tune:")
-
-                    Menu {
-                        ForEach(presetStore.fineTunePresets) { preset in
-                            if !preset.isSystemDefault {
-                                Button(role: .destructive) {
-                                    presetStore.deleteFineTunePreset(preset)
-                                } label: {
-                                    Label("Delete “\(preset.name)”", systemImage: "trash")
-                                }
-                            }
-                            Button {
-                                dual.fineTune = preset.layer
-                                presetStore.selectedFineTuneName = preset.name
-                            } label: {
-                                HStack {
-                                    Text(preset.name)
-                                    if presetStore.selectedFineTuneName == preset.name {
-                                        Image(systemName: "checkmark")
-                                    }
-                                }
-                            }
-                        }
-                    } label: {
-                        HStack(spacing: 4) {
-                            Text(presetStore.selectedFineTuneName)
-                                .font(.app(size: 12, weight: .bold, design: .rounded))
-                                .lineLimit(1)
-                            Image(systemName: "chevron.down")
-                                .font(.app(size: 10, weight: .bold))
-                        }
-                        .foregroundStyle(theme.fineTint)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(Capsule().fill(theme.fineTint.opacity(0.15)))
-                    }
-
-                    Spacer()
-
-                    Button {
-                        newFineTuneName = presetStore.selectedFineTuneName
-                        showSaveFineTuneAlert = true
-                    } label: {
-                        Label("Save", systemImage: "bookmark.fill")
-                            .font(.app(size: 11, weight: .bold, design: .rounded))
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-                    .tint(theme.fineTint)
-                }
+                .padding(.horizontal, 12)
+                .padding(.top, 4)
+                .padding(.bottom, 16)
             }
-            .padding(10)
-            .glassCard(corner: 14)
-
-            EQGraphView(dual: dual)
-
-            // Modern Liquid Glass Switch (Target Curve | Fine-Tune Adjust)
-            liquidGlassSegmentedSwitch
-
-            Text(dual.editingLayer.subtitle)
-                .font(.app(size: 11, weight: .medium, design: .rounded))
-                .foregroundStyle(theme.tertiaryText)
-
-            // Preamp −20…+20
-            VStack(alignment: .leading, spacing: 6) {
-                HStack {
-                    Text("\(dual.editingLayer.title) Preamp")
-                        .font(.app(size: 13, weight: .semibold, design: .rounded))
-                        .foregroundStyle(theme.primaryText)
-                    Spacer()
-                    Text(String(format: "%+.1f dB", dual.activeLayer.preamp))
-                        .font(.app(size: 13, weight: .bold, design: .monospaced))
+            .scrollIndicators(.visible)
+            .background(Color.clear)
+            .navigationTitle("EQ Controls")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(.hidden, for: .navigationBar)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                        .font(.app(size: 15, weight: .bold, design: .rounded))
                         .foregroundStyle(theme.accent)
                 }
-                Slider(
-                    value: Binding(
-                        get: { dual.activeLayer.preamp },
-                        set: { v in
-                            var layer = dual.activeLayer
-                            layer.preamp = v
-                            dual.activeLayer = layer
-                        }
-                    ),
-                    in: EQLayerState.preampRange
-                )
-                .tint(theme.accent)
             }
-            .padding(12)
-            .glassCard(corner: 14)
-
-            // 10 bands horizontal scroll
-            Text("10 parametric bands · F / Gain / Q")
-                .font(.app(size: 12, weight: .semibold, design: .rounded))
-                .foregroundStyle(theme.secondaryText)
-
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 10) {
-                    ForEach(Array(dual.activeLayer.bands.indices), id: \.self) { i in
-                        bandCard(index: i)
-                    }
-                }
-                .padding(.vertical, 4)
-            }
-
-            HStack(spacing: 8) {
-                Button {
-                    dual.isBypassed.toggle()
-                } label: {
-                    Label(dual.isBypassed ? "EQ Bypassed" : "EQ Active", systemImage: dual.isBypassed ? "speaker.slash" : "waveform")
-                }
-                .buttonStyle(.bordered)
-                .tint(dual.isBypassed ? theme.danger : theme.accent)
-
-                Button {
-                    dual.resetFineTune()
-                } label: {
-                    Label("Reset Fine-Tune", systemImage: "arrow.counterclockwise")
-                }
-                .buttonStyle(.bordered)
-                .tint(theme.fineTint)
-
-                Spacer()
-            }
-            .font(.app(size: 12, weight: .semibold, design: .rounded))
         }
+        // Slightly shorter default than full medium — content is denser now.
+        .frostedBleedSheet(accent: theme.accent)
+        .presentationDetents([.fraction(0.55), .large])
+        .presentationContentInteraction(.scrolls)
         .alert("Save Target Curve", isPresented: $showSaveTargetAlert) {
             TextField("Target Curve Name", text: $newTargetName)
             Button("Cancel", role: .cancel) {}
@@ -235,14 +176,172 @@ struct EQControlsView: View {
         } message: {
             Text("Enter a name for your custom fine-tune adjustment curve.")
         }
+        .sheet(isPresented: $showDeviceLinksSheet) {
+            TargetDeviceLinksSheet(
+                dual: $dual,
+                onToast: onToast
+            )
+            .environmentObject(presetStore)
+            .environment(\.grokTheme, theme)
+        }
+        .sheet(isPresented: $showTargetPickerSheet) {
+            ProfilePickerSheet(
+                title: "Target curves",
+                accent: theme.targetTint,
+                presets: presetStore.targetPresets,
+                selectedName: presetStore.selectedTargetName,
+                onSelect: { preset in
+                    dual.target = preset.layer
+                    presetStore.selectedTargetName = preset.name
+                },
+                onDelete: { preset in
+                    presetStore.deleteTargetPreset(preset)
+                },
+                onImport: {
+                    showTargetPickerSheet = false
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                        onImportAutoEQ()
+                    }
+                },
+                onLinkDevices: {
+                    showTargetPickerSheet = false
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                        showDeviceLinksSheet = true
+                    }
+                }
+            )
+            .environment(\.grokTheme, theme)
+        }
+        .sheet(isPresented: $showFineTunePickerSheet) {
+            ProfilePickerSheet(
+                title: "Fine-Tune profiles",
+                accent: theme.fineTint,
+                presets: presetStore.fineTunePresets,
+                selectedName: presetStore.selectedFineTuneName,
+                onSelect: { preset in
+                    dual.fineTune = preset.layer
+                    presetStore.selectedFineTuneName = preset.name
+                },
+                onDelete: { preset in
+                    presetStore.deleteFineTunePreset(preset)
+                },
+                onImport: nil,
+                onLinkDevices: nil
+            )
+            .environment(\.grokTheme, theme)
+        }
     }
 
-    private var liquidGlassSegmentedSwitch: some View {
-        HStack(spacing: 4) {
-            switchPillSegment(.target, title: "Target Curve", subtitle: "Compensation", tint: theme.targetTint)
-            switchPillSegment(.fineTune, title: "Fine-Tune Adjust", subtitle: "Personal EQ", tint: theme.fineTint)
+    // MARK: - Profile header
+
+    private var profileHeaderCard: some View {
+        VStack(spacing: 6) {
+            // Target
+            HStack(spacing: 6) {
+                legendDot(theme.targetTint, "Target")
+
+                Button {
+                    showTargetPickerSheet = true
+                } label: {
+                    HStack(spacing: 3) {
+                        Text(presetStore.selectedTargetName)
+                            .font(.app(size: 11, weight: .bold, design: .rounded))
+                            .lineLimit(1)
+                        Image(systemName: "chevron.down")
+                            .font(.app(size: 9, weight: .bold))
+                    }
+                    .foregroundStyle(theme.targetTint)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Capsule().fill(theme.targetTint.opacity(0.15)))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Target profile")
+
+                Spacer(minLength: 4)
+
+                Button {
+                    showDeviceLinksSheet = true
+                } label: {
+                    Image(systemName: "link")
+                        .font(.app(size: 11, weight: .semibold))
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.mini)
+                .tint(theme.targetTint)
+                .accessibilityLabel("Link Target to devices")
+
+                Button(action: onImportAutoEQ) {
+                    Image(systemName: "doc.badge.plus")
+                        .font(.app(size: 11, weight: .semibold))
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.mini)
+                .tint(theme.targetTint)
+                .accessibilityLabel("Import AutoEQ")
+
+                Button {
+                    newTargetName = presetStore.selectedTargetName
+                    showSaveTargetAlert = true
+                } label: {
+                    Text("Save")
+                        .font(.app(size: 10, weight: .bold, design: .rounded))
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.mini)
+                .tint(theme.targetTint)
+            }
+
+            // Fine-Tune
+            HStack(spacing: 6) {
+                legendDot(theme.accent, "Fine-Tune")
+
+                Button {
+                    showFineTunePickerSheet = true
+                } label: {
+                    HStack(spacing: 3) {
+                        Text(presetStore.selectedFineTuneName)
+                            .font(.app(size: 11, weight: .bold, design: .rounded))
+                            .lineLimit(1)
+                        Image(systemName: "chevron.down")
+                            .font(.app(size: 9, weight: .bold))
+                    }
+                    .foregroundStyle(theme.accent)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Capsule().fill(theme.accent.opacity(0.15)))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Fine-Tune profile")
+
+                Spacer(minLength: 4)
+
+                Button {
+                    newFineTuneName = presetStore.selectedFineTuneName
+                    showSaveFineTuneAlert = true
+                } label: {
+                    Text("Save")
+                        .font(.app(size: 10, weight: .bold, design: .rounded))
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.mini)
+                .tint(theme.accent)
+            }
         }
-        .padding(4)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .glassCard(corner: 14)
+    }
+
+    // MARK: - Segmented switch
+
+    private var liquidGlassSegmentedSwitch: some View {
+        HStack(spacing: 3) {
+            switchPillSegment(.target, title: "Target Curve", subtitle: "Compensation", tint: theme.targetTint)
+            // Fine-Tune uses app accent — not the old hard-coded orange.
+            switchPillSegment(.fineTune, title: "Fine-Tune Adjust", subtitle: "Personal EQ", tint: theme.accent)
+        }
+        .padding(3)
         .background {
             Capsule()
                 .fill(theme.isDark ? Color.white.opacity(0.04) : Color.clear)
@@ -266,7 +365,7 @@ struct EQControlsView: View {
                         )
                 }
         }
-        .shadow(color: .black.opacity(theme.isDark ? 0.20 : 0.08), radius: theme.isDark ? 6 : 10, y: theme.isDark ? 2 : 4)
+        .shadow(color: .black.opacity(theme.isDark ? 0.16 : 0.06), radius: theme.isDark ? 4 : 6, y: 2)
     }
 
     private func switchPillSegment(_ layer: EQLayer, title: String, subtitle: String, tint: Color) -> some View {
@@ -276,144 +375,689 @@ struct EQControlsView: View {
                 dual.editingLayer = layer
             }
         } label: {
-            VStack(spacing: 2) {
+            VStack(spacing: 1) {
                 Text(title)
-                    .font(.app(size: 13, weight: .bold, design: .rounded))
+                    .font(.app(size: 11, weight: .bold, design: .rounded))
                     .foregroundStyle(isSelected ? tint : theme.secondaryText)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
                 Text(subtitle)
-                    .font(.app(size: 10, weight: .semibold, design: .rounded))
+                    .font(.app(size: 9, weight: .semibold, design: .rounded))
                     .foregroundStyle(isSelected ? tint.opacity(0.85) : theme.tertiaryText)
+                    .lineLimit(1)
             }
             .frame(maxWidth: .infinity)
-            .padding(.vertical, 8)
+            .padding(.vertical, 5)
             .background {
                 if isSelected {
                     Capsule()
                         .fill(tint.opacity(0.20))
                         .overlay {
-                            Capsule().strokeBorder(tint.opacity(0.40), lineWidth: 1.0)
+                            Capsule().strokeBorder(tint.opacity(0.40), lineWidth: 0.9)
                         }
-                        .shadow(color: tint.opacity(0.35), radius: 6)
                 }
             }
         }
         .buttonStyle(.plain)
     }
 
-    private func bandCard(index: Int) -> some View {
-        let band = dual.activeLayer.bands[index]
+    // MARK: - Preamp
 
-        func update(_ mutate: (inout EQBand) -> Void) {
-            var layer = dual.activeLayer
-            mutate(&layer.bands[index])
-            layer.bands[index].sanitize() // clamp F / G / Q into legal ranges
-            dual.activeLayer = layer
-        }
-
-        return VStack(spacing: 8) {
-            HStack {
-                Text("B\(index + 1)")
-                    .font(.app(size: 11, weight: .bold, design: .rounded))
-                    .foregroundStyle(theme.accent)
-                Spacer()
-                Toggle(
-                    "",
-                    isOn: Binding(
-                        get: { dual.activeLayer.bands[index].isEnabled },
-                        set: { v in update { $0.isEnabled = v } }
-                    )
-                )
-                .labelsHidden()
-                .controlSize(.mini)
+    private var preampCard: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Text("\(dual.editingLayer.title) Preamp")
+                    .font(.app(size: 12, weight: .semibold, design: .rounded))
+                    .foregroundStyle(theme.primaryText)
+                Spacer(minLength: 4)
+                Text(String(format: "%+.1f dB", dual.activeLayer.preamp))
+                    .font(.app(size: 12, weight: .bold, design: .monospaced))
+                    .foregroundStyle(controlTint)
             }
-
-            Text(String(format: "%+.1f dB", band.gain))
-                .font(.app(size: 11, weight: .semibold, design: .monospaced))
-                .foregroundStyle(
-                    abs(band.gain) < 0.05
-                        ? theme.secondaryText
-                        : (band.gain > 0 ? theme.positive : theme.danger)
-                )
-
             Slider(
                 value: Binding(
-                    get: { dual.activeLayer.bands[index].gain },
-                    set: { v in update { $0.gain = v } }
+                    get: { dual.activeLayer.preamp },
+                    set: { v in
+                        var layer = dual.activeLayer
+                        layer.preamp = v
+                        dual.activeLayer = layer
+                    }
                 ),
-                in: EQBand.gainRange
+                in: EQLayerState.preampRange
             )
             .controlSize(.small)
+            .tint(controlTint)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background { modernEQSurface(corner: 16) }
+    }
+
+    // MARK: - Vertical bands
+
+    private var bandsSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("10 bands · Gain · F · Q")
+                .font(.app(size: 11, weight: .semibold, design: .rounded))
+                .foregroundStyle(theme.secondaryText)
+                .padding(.horizontal, 2)
+
+            ForEach(Array(dual.activeLayer.bands.indices), id: \.self) { i in
+                EQBandVerticalRow(
+                    index: i,
+                    band: dual.activeLayer.bands[i],
+                    tint: controlTint,
+                    onUpdate: { mutate in
+                        var layer = dual.activeLayer
+                        mutate(&layer.bands[i])
+                        layer.bands[i].sanitize()
+                        dual.activeLayer = layer
+                    }
+                )
+            }
+        }
+    }
+
+    private var utilityRow: some View {
+        HStack(spacing: 6) {
+            Button {
+                dual.isBypassed.toggle()
+            } label: {
+                Label(
+                    dual.isBypassed ? "Bypassed" : "EQ Active",
+                    systemImage: dual.isBypassed ? "speaker.slash" : "waveform"
+                )
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .tint(dual.isBypassed ? theme.danger : theme.accent)
+
+            Button {
+                dual.resetFineTune()
+            } label: {
+                Label("Reset FT", systemImage: "arrow.counterclockwise")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
             .tint(theme.accent)
-            .frame(width: 100)
 
-            labeledLogSlider(
-                "Hz",
-                value: Binding(
-                    get: { dual.activeLayer.bands[index].frequency },
-                    set: { v in update { $0.frequency = v } }
-                ),
-                range: EQBand.frequencyRange
-            )
-            labeledSlider(
-                "Q",
-                value: Binding(
-                    get: { dual.activeLayer.bands[index].q },
-                    set: { v in update { $0.q = v } }
-                ),
-                range: EQBand.qRange
-            )
-
-            Text(freqLabel(band.frequency))
-                .font(.app(size: 10, design: .monospaced))
-                .foregroundStyle(theme.tertiaryText)
-            Text(String(format: "Q %.2f", band.q))
-                .font(.app(size: 10, design: .monospaced))
-                .foregroundStyle(theme.tertiaryText)
+            Spacer(minLength: 0)
         }
-        .padding(10)
-        .frame(width: 120)
-        .glassCard(corner: 14)
-        .opacity(band.isEnabled ? 1 : 0.5)
-    }
-
-    private func labeledSlider(_ title: String, value: Binding<Double>, range: ClosedRange<Double>) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(title)
-                .font(.app(size: 9, weight: .semibold))
-                .foregroundStyle(theme.tertiaryText)
-            Slider(value: value, in: range)
-                .controlSize(.mini)
-                .tint(theme.accentSecondary)
-        }
-    }
-
-    private func labeledLogSlider(_ title: String, value: Binding<Double>, range: ClosedRange<Double>) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(title)
-                .font(.app(size: 9, weight: .semibold))
-                .foregroundStyle(theme.tertiaryText)
-            Slider(
-                value: Binding(
-                    get: { log10(value.wrappedValue) },
-                    set: { value.wrappedValue = pow(10, $0) }
-                ),
-                in: log10(range.lowerBound) ... log10(range.upperBound)
-            )
-            .controlSize(.mini)
-            .tint(theme.accentSecondary)
-        }
+        .font(.app(size: 11, weight: .semibold, design: .rounded))
     }
 
     private func legendDot(_ color: Color, _ title: String) -> some View {
-        HStack(spacing: 4) {
-            Capsule().fill(color).frame(width: 12, height: 3)
+        HStack(spacing: 3) {
+            Capsule().fill(color).frame(width: 10, height: 2.5)
             Text(title)
                 .font(.app(size: 10, weight: .semibold, design: .rounded))
                 .foregroundStyle(theme.secondaryText)
         }
     }
 
+    /// Soft surface for preamp chrome — solid fill, not live Material (cheaper under scroll).
+    @ViewBuilder
+    private func modernEQSurface(corner: CGFloat) -> some View {
+        RoundedRectangle(cornerRadius: corner, style: .continuous)
+            .fill(theme.isDark ? Color.white.opacity(0.05) : Color.white.opacity(0.70))
+            .overlay {
+                RoundedRectangle(cornerRadius: corner, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                Color.white.opacity(theme.isDark ? 0.06 : 0.40),
+                                Color.white.opacity(theme.isDark ? 0.01 : 0.10)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: corner, style: .continuous)
+                    .strokeBorder(
+                        LinearGradient(
+                            colors: [
+                                Color.white.opacity(theme.isDark ? 0.18 : 0.60),
+                                theme.accent.opacity(theme.isDark ? 0.10 : 0.14),
+                                Color.white.opacity(theme.isDark ? 0.04 : 0.12)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        lineWidth: 0.75
+                    )
+            }
+            .shadow(color: .black.opacity(theme.isDark ? 0.20 : 0.05), radius: 6, y: 2)
+    }
+}
+
+// MARK: - Vertical band row (modern liquid-glass)
+
+/// Compact band row: soft glass plate, pill index badge, accent-tinted controls, nested F/Q well.
+private struct EQBandVerticalRow: View {
+    let index: Int
+    let band: EQBand
+    let tint: Color
+    var onUpdate: ((inout EQBand) -> Void) -> Void
+
+    @Environment(\.grokTheme) private var theme
+
+    private var corner: CGFloat { 18 }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            // Header: index pill · gain · enable
+            HStack(spacing: 10) {
+                Text("B\(index + 1)")
+                    .font(.app(size: 11, weight: .bold, design: .rounded))
+                    .foregroundStyle(tint)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 4)
+                    .background {
+                        Capsule(style: .continuous)
+                            .fill(tint.opacity(theme.isDark ? 0.18 : 0.12))
+                            .overlay {
+                                Capsule(style: .continuous)
+                                    .strokeBorder(tint.opacity(0.28), lineWidth: 0.7)
+                            }
+                    }
+
+                Text(String(format: "%+.1f dB", band.gain))
+                    .font(.app(size: 14, weight: .bold, design: .monospaced))
+                    .foregroundStyle(
+                        abs(band.gain) < 0.05
+                            ? theme.secondaryText
+                            : (band.gain > 0 ? theme.positive : theme.danger)
+                    )
+
+                Spacer(minLength: 4)
+
+                Toggle(
+                    "",
+                    isOn: Binding(
+                        get: { band.isEnabled },
+                        set: { v in onUpdate { $0.isEnabled = v } }
+                    )
+                )
+                .labelsHidden()
+                .controlSize(.mini)
+                .tint(tint)
+                .accessibilityLabel("Band \(index + 1) enabled")
+            }
+
+            // Gain — primary control, full width, accent theme color
+            Slider(
+                value: Binding(
+                    get: { band.gain },
+                    set: { v in onUpdate { $0.gain = v } }
+                ),
+                in: EQBand.gainRange
+            )
+            .controlSize(.small)
+            .tint(tint)
+
+            // Nested F / Q well — secondary params, quieter chrome
+            HStack(spacing: 0) {
+                miniParam(
+                    label: "F",
+                    valueText: freqLabel(band.frequency),
+                    slider: Slider(
+                        value: Binding(
+                            get: { log10(band.frequency) },
+                            set: { v in onUpdate { $0.frequency = pow(10, v) } }
+                        ),
+                        in: log10(EQBand.frequencyRange.lowerBound) ... log10(EQBand.frequencyRange.upperBound)
+                    )
+                    .controlSize(.mini)
+                    .tint(tint.opacity(0.85))
+                )
+
+                Rectangle()
+                    .fill(Color.white.opacity(theme.isDark ? 0.08 : 0.18))
+                    .frame(width: 1, height: 28)
+                    .padding(.horizontal, 8)
+
+                miniParam(
+                    label: "Q",
+                    valueText: String(format: "%.2f", band.q),
+                    slider: Slider(
+                        value: Binding(
+                            get: { band.q },
+                            set: { v in onUpdate { $0.q = v } }
+                        ),
+                        in: EQBand.qRange
+                    )
+                    .controlSize(.mini)
+                    .tint(tint.opacity(0.85))
+                )
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(theme.isDark ? Color.black.opacity(0.28) : Color.white.opacity(0.35))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .strokeBorder(Color.white.opacity(theme.isDark ? 0.08 : 0.35), lineWidth: 0.6)
+                    }
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 11)
+        .background { bandGlassPlate }
+        .opacity(band.isEnabled ? 1 : 0.42)
+        .animation(.easeOut(duration: 0.18), value: band.isEnabled)
+    }
+
+    private func miniParam<S: View>(label: String, valueText: String, slider: S) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 4) {
+                Text(label)
+                    .font(.app(size: 10, weight: .bold, design: .rounded))
+                    .foregroundStyle(theme.tertiaryText)
+                Spacer(minLength: 2)
+                Text(valueText)
+                    .font(.app(size: 10, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(theme.secondaryText)
+            }
+            slider
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private var bandGlassPlate: some View {
+        // Solid + light gradient (not live Material × 10 bands — Materials are a thermal tax).
+        RoundedRectangle(cornerRadius: corner, style: .continuous)
+            .fill(theme.isDark ? Color.white.opacity(0.055) : Color.white.opacity(0.72))
+            .overlay {
+                RoundedRectangle(cornerRadius: corner, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                Color.white.opacity(theme.isDark ? 0.07 : 0.40),
+                                tint.opacity(theme.isDark ? 0.05 : 0.04),
+                                Color.clear
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+            }
+            .overlay(alignment: .leading) {
+                RoundedRectangle(cornerRadius: 2, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [tint.opacity(0.85), tint.opacity(0.25)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
+                    .frame(width: 3)
+                    .padding(.vertical, 14)
+                    .padding(.leading, 1)
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: corner, style: .continuous)
+                    .strokeBorder(
+                        LinearGradient(
+                            colors: [
+                                Color.white.opacity(theme.isDark ? 0.20 : 0.65),
+                                tint.opacity(theme.isDark ? 0.14 : 0.18),
+                                Color.white.opacity(theme.isDark ? 0.04 : 0.14)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        lineWidth: 0.8
+                    )
+            }
+            .shadow(color: .black.opacity(theme.isDark ? 0.22 : 0.05), radius: 6, y: 2)
+    }
+
     private func freqLabel(_ f: Double) -> String {
-        f >= 1000 ? String(format: "%.2f kHz", f / 1000) : String(format: "%.0f Hz", f)
+        f >= 1000 ? String(format: "%.1fk", f / 1000) : String(format: "%.0f", f)
+    }
+}
+
+// MARK: - Glass pills (profile / device rows)
+
+/// Capsule / continuous glass pill for profile names & actions.
+private struct GlassProfilePill: View {
+    let title: String
+    let subtitle: String?
+    let accent: Color
+    let isSelected: Bool
+    var systemImage: String? = nil
+
+    @Environment(\.grokTheme) private var theme
+
+    var body: some View {
+        HStack(spacing: 12) {
+            if let systemImage {
+                Image(systemName: systemImage)
+                    .font(.app(size: 16, weight: .semibold))
+                    .foregroundStyle(isSelected ? accent : theme.secondaryText)
+                    .frame(width: 28)
+            } else {
+                Circle()
+                    .fill(
+                        LinearGradient(
+                            colors: [accent.opacity(isSelected ? 0.95 : 0.45), accent.opacity(isSelected ? 0.55 : 0.15)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .frame(width: 10, height: 10)
+                    .shadow(color: accent.opacity(isSelected ? 0.55 : 0), radius: 6)
+            }
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.app(size: 15, weight: .semibold, design: .rounded))
+                    .foregroundStyle(theme.primaryText)
+                    .lineLimit(2)
+                if let subtitle, !subtitle.isEmpty {
+                    Text(subtitle)
+                        .font(.app(size: 12, weight: .medium, design: .rounded))
+                        .foregroundStyle(theme.secondaryText)
+                        .lineLimit(1)
+                }
+            }
+            Spacer(minLength: 8)
+            if isSelected {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.app(size: 20, weight: .semibold))
+                    .foregroundStyle(accent)
+                    .symbolRenderingMode(.hierarchical)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+        .background {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(.regularMaterial)
+                .opacity(theme.isDark ? 0.50 : 0.68)
+                .overlay {
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .fill(
+                            isSelected
+                                ? accent.opacity(theme.isDark ? 0.18 : 0.12)
+                                : Color.white.opacity(theme.isDark ? 0.04 : 0.20)
+                        )
+                }
+                .overlay {
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .strokeBorder(
+                            LinearGradient(
+                                colors: [
+                                    Color.white.opacity(theme.isDark ? 0.18 : 0.55),
+                                    accent.opacity(isSelected ? 0.55 : 0.12),
+                                    Color.white.opacity(theme.isDark ? 0.04 : 0.12)
+                                ],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            ),
+                            lineWidth: isSelected ? 1.2 : 0.6
+                        )
+                }
+                .shadow(color: accent.opacity(isSelected ? 0.28 : 0.06), radius: isSelected ? 14 : 6, y: 4)
+        }
+    }
+}
+
+// MARK: - Profile picker sheet (frosted pills — stable while playing)
+
+private struct ProfilePickerSheet: View {
+    let title: String
+    let accent: Color
+    let presets: [EQPreset]
+    let selectedName: String
+    var onSelect: (EQPreset) -> Void
+    var onDelete: (EQPreset) -> Void
+    var onImport: (() -> Void)?
+    var onLinkDevices: (() -> Void)?
+
+    @Environment(\.grokTheme) private var theme
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Profiles")
+                        .font(.app(size: 12, weight: .bold, design: .rounded))
+                        .foregroundStyle(theme.secondaryText)
+                        .textCase(.uppercase)
+                        .tracking(0.6)
+                        .padding(.horizontal, 4)
+
+                    ForEach(presets) { preset in
+                        let selected = selectedName == preset.name
+                        Button {
+                            onSelect(preset)
+                            dismiss()
+                        } label: {
+                            GlassProfilePill(
+                                title: preset.name,
+                                subtitle: preset.isSystemDefault ? "Built-in" : "Custom curve",
+                                accent: accent,
+                                isSelected: selected
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        .contextMenu {
+                            if !preset.isSystemDefault {
+                                Button(role: .destructive) {
+                                    onDelete(preset)
+                                } label: {
+                                    Label("Delete", systemImage: "trash")
+                                }
+                            }
+                        }
+                    }
+
+                    if onImport != nil || onLinkDevices != nil {
+                        Text("Actions")
+                            .font(.app(size: 12, weight: .bold, design: .rounded))
+                            .foregroundStyle(theme.secondaryText)
+                            .textCase(.uppercase)
+                            .tracking(0.6)
+                            .padding(.horizontal, 4)
+                            .padding(.top, 8)
+
+                        if let onImport {
+                            Button(action: onImport) {
+                                GlassProfilePill(
+                                    title: "Import AutoEQ",
+                                    subtitle: ".txt / .xml from Squiglink & friends",
+                                    accent: accent,
+                                    isSelected: false,
+                                    systemImage: "doc.badge.plus"
+                                )
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        if let onLinkDevices {
+                            Button(action: onLinkDevices) {
+                                GlassProfilePill(
+                                    title: "Link devices",
+                                    subtitle: "Bluetooth Target auto-switch",
+                                    accent: accent,
+                                    isSelected: false,
+                                    systemImage: "wave.3.right"
+                                )
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+                .padding(.horizontal, 18)
+                .padding(.top, 8)
+                .padding(.bottom, 28)
+            }
+            .scrollIndicators(.visible)
+            .background(Color.clear)
+            .navigationTitle(title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(.hidden, for: .navigationBar)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                        .font(.app(size: 16, weight: .bold, design: .rounded))
+                        .foregroundStyle(accent)
+                }
+            }
+        }
+        .frostedBleedSheet(accent: accent)
+    }
+}
+
+// MARK: - Device ↔ Target links (frosted glass sheet)
+
+private struct TargetDeviceLinksSheet: View {
+    @Binding var dual: DualEQState
+    var onToast: ((String) -> Void)?
+
+    @EnvironmentObject private var presetStore: EQPresetStore
+    @Environment(\.grokTheme) private var theme
+    @Environment(\.dismiss) private var dismiss
+
+    private var devices: [AudioRouteDevice] {
+        presetStore.devicesForAssignmentMenu()
+    }
+
+    private var connected: [AudioRouteDevice] {
+        presetStore.connectedDevices
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    sectionLabel("Connected now")
+                    if connected.isEmpty {
+                        GlassProfilePill(
+                            title: "No external device on route",
+                            subtitle: "Connect headphones and play so iOS lists them",
+                            accent: theme.targetTint,
+                            isSelected: false,
+                            systemImage: "antenna.radiowaves.left.and.right.slash"
+                        )
+                    } else {
+                        ForEach(connected) { device in
+                            let bound = presetStore.assignment(forDeviceKey: device.key)
+                            GlassProfilePill(
+                                title: device.name,
+                                subtitle: bound.map { "Linked · \($0.targetPresetName)" } ?? "\(device.kindLabel) · not linked",
+                                accent: theme.targetTint,
+                                isSelected: bound != nil,
+                                systemImage: device.isBluetooth ? "airpodsmax" : "hifispeaker.fill"
+                            )
+                        }
+                    }
+
+                    sectionLabel("Assign Target")
+                    ForEach(devices) { device in
+                        deviceAssignPill(device)
+                    }
+
+                    Text("Switching headphones later auto-loads that Target. Fine-Tune stays yours.")
+                        .font(.app(size: 12, weight: .medium, design: .rounded))
+                        .foregroundStyle(theme.tertiaryText)
+                        .padding(.horizontal, 4)
+
+                    if !presetStore.deviceTargetAssignments.isEmpty {
+                        sectionLabel("Linked devices")
+                        ForEach(presetStore.deviceTargetAssignments) { a in
+                            Button {
+                                presetStore.unassignDevice(a)
+                                onToast?("Unassigned “\(a.deviceName)”")
+                            } label: {
+                                GlassProfilePill(
+                                    title: a.deviceName,
+                                    subtitle: "Tap to unassign · \(a.targetPresetName)",
+                                    accent: theme.danger,
+                                    isSelected: false,
+                                    systemImage: "link.badge.minus"
+                                )
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+                .padding(.horizontal, 18)
+                .padding(.top, 8)
+                .padding(.bottom, 28)
+            }
+            .scrollIndicators(.visible)
+            .background(Color.clear)
+            .navigationTitle("Device links")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(.hidden, for: .navigationBar)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                        .font(.app(size: 16, weight: .bold, design: .rounded))
+                        .foregroundStyle(theme.targetTint)
+                }
+            }
+            .onAppear { presetStore.refreshConnectedDevices() }
+            .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.routeChangeNotification)) { _ in
+                presetStore.refreshConnectedDevices()
+            }
+        }
+        .frostedBleedSheet(accent: theme.targetTint)
+    }
+
+    private func sectionLabel(_ text: String) -> some View {
+        Text(text)
+            .font(.app(size: 12, weight: .bold, design: .rounded))
+            .foregroundStyle(theme.secondaryText)
+            .textCase(.uppercase)
+            .tracking(0.6)
+            .padding(.horizontal, 4)
+            .padding(.top, 4)
+    }
+
+    @ViewBuilder
+    private func deviceAssignPill(_ device: AudioRouteDevice) -> some View {
+        let current = presetStore.assignment(forDeviceKey: device.key)?.targetPresetName
+        Menu {
+            ForEach(presetStore.targetPresets) { preset in
+                Button {
+                    presetStore.assignTarget(preset.name, to: device)
+                    dual.target = preset.layer
+                    presetStore.selectedTargetName = preset.name
+                    let tag = device.isConnected ? "" : " (last seen)"
+                    onToast?("“\(preset.name)” → \(device.name)\(tag)")
+                } label: {
+                    if current == preset.name {
+                        Label(preset.name, systemImage: "checkmark")
+                    } else {
+                        Text(preset.name)
+                    }
+                }
+            }
+            if current != nil {
+                Divider()
+                Button(role: .destructive) {
+                    presetStore.unassignDevice(key: device.key)
+                    onToast?("Unassigned “\(device.name)”")
+                } label: {
+                    Label("Unassign", systemImage: "link.badge.minus")
+                }
+            }
+        } label: {
+            GlassProfilePill(
+                title: device.name,
+                subtitle: device.isConnected
+                    ? "\(device.kindLabel) · \(current ?? "choose Target")"
+                    : "Last seen · \(current ?? "choose Target")",
+                accent: theme.targetTint,
+                isSelected: current != nil,
+                systemImage: device.isBluetooth ? "wave.3.right" : "hifispeaker"
+            )
+        }
     }
 }

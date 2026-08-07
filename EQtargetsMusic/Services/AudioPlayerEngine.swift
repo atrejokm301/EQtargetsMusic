@@ -137,7 +137,9 @@ final class AudioPlayerEngine: ObservableObject {
     @Published private(set) var duration: TimeInterval = 0
     @Published var queue: [Track] = []
     @Published var queueIndex: Int = 0
-    @Published var toast: String?
+    /// Ephemeral UI message — always set via `showToast` so it auto-clears (never leave @Published toast forever).
+    @Published private(set) var toast: String?
+    private var toastClearTask: Task<Void, Never>?
     @Published private(set) var libraryMetadataEpoch: UInt64 = 0
     @Published var repeatMode: RepeatMode = .off {
         didSet {
@@ -224,14 +226,18 @@ final class AudioPlayerEngine: ObservableObject {
     /// Bumps when track changes so a late high-res load cannot attach to the wrong song.
     private var nowPlayingArtLoadToken: UInt64 = 0
     private var lastNowPlayingPush: TimeInterval = 0
-    /// Foreground UI / crossfade backup tick. Background / LPM use slower intervals
-    /// (natural crossfade still fires; fewer main-runloop wakes = less battery).
+    /// Foreground UI / crossfade backup tick. Background / LPM / heat use slower intervals
+    /// (natural crossfade still fires; fewer main-runloop wakes = less heat).
     private var progressTickInterval: TimeInterval {
-        if ProcessInfo.processInfo.isLowPowerModeEnabled { return 1.15 }
-        if UIApplication.shared.applicationState == .background { return 1.0 }
-        return 0.75
+        if ProcessInfo.processInfo.isLowPowerModeEnabled { return 1.35 }
+        if UIApplication.shared.applicationState == .background { return 1.15 }
+        switch ProcessInfo.processInfo.thermalState {
+        case .serious, .critical: return 1.25
+        case .fair: return 1.0
+        default: return 0.85
+        }
     }
-    private let progressPublishEpsilon: TimeInterval = 0.25
+    private let progressPublishEpsilon: TimeInterval = 0.30
 
     private var fadingOutFile: AVAudioFile?
     private var consecutiveMissingSkips = 0
@@ -958,10 +964,14 @@ extension AudioPlayerEngine {
         let incoming = inactiveDeck
         fadingOutFile = outgoing.file
 
+        // Volume 0 first — never un-bypass EQ while the incoming mixer is audible.
         incoming.silenceAndStop()
         incoming.mixer.outputVolume = 0
         outgoing.mixer.outputVolume = 1
-        applyEQ(to: incoming)
+        // Full DualEQ on both decks before schedule/play/fade (Target → Fine-Tune).
+        // Incoming params + processing ON while still silent so the blend has no EQ jump.
+        applyEQ(to: outgoing, processingEnabled: true)
+        applyEQ(to: incoming, processingEnabled: true)
 
         let fileFmt = file.processingFormat
         let nextTrim = silenceTrimQuick(for: file, track: nextTrack, url: url)
@@ -1077,6 +1087,8 @@ extension AudioPlayerEngine {
                     t.invalidate()
                     self.crossfadeTimer = nil
                     outgoing.streamFeedGeneration &+= 1
+                    // Silence outgoing first, then swap roles, then bypass inactive EQ
+                    // (never toggle unit.bypass while that deck's mixer volume > 0).
                     outPlayer.stop()
                     outPlayer.reset()
                     outMixer.outputVolume = 0
@@ -1088,6 +1100,9 @@ extension AudioPlayerEngine {
                     self.activeDeck = incoming
                     self.inactiveDeck = outgoing
                     self.isTransitioning = false
+                    // Active keeps DualEQ processing; new inactive → targetEQ+fineEQ bypass.
+                    self.applyEQ(to: self.activeDeck, processingEnabled: true)
+                    self.applyEQ(to: self.inactiveDeck, processingEnabled: false)
 
                     let elapsed = min(fadeDur, playableNext)
                     self.currentTrack = nextTrack
@@ -1122,6 +1137,8 @@ extension AudioPlayerEngine {
             }
             activeDeck.mixer.outputVolume = 1
         }
+        // Coherent EQ after abort/skip: active processing ON, inactive bypassed.
+        applyEQ()
     }
 
     // MARK: - Seek
@@ -1251,6 +1268,7 @@ extension AudioPlayerEngine {
         }
 
         sampleRate = gf.sampleRate
+        // Active DualEQ ON; inactive silent + EQ units bypassed (no wasted peaking DSP).
         applyEQ()
 
         // Fast / cached silence trim only — never block play on a full-file scan.
@@ -1350,6 +1368,16 @@ extension AudioPlayerEngine {
     /// Battery delta vs 44.1 is small; stability and converter quality matter more for clarity.
     private static let playbackSampleRate: Double = 48_000
 
+    /// 44.1→48 converter quality. Max when cool; step down under heat (SRC is real CPU).
+    private static var preferredSRCQuality: AVAudioQuality {
+        if ProcessInfo.processInfo.isLowPowerModeEnabled { return .high }
+        switch ProcessInfo.processInfo.thermalState {
+        case .serious, .critical: return .medium
+        case .fair: return .high
+        default: return .max
+        }
+    }
+
     private static func makeGraphFormat() -> AVAudioFormat? {
         AVAudioFormat(
             commonFormat: .pcmFormatFloat32,
@@ -1429,8 +1457,8 @@ extension AudioPlayerEngine {
     ) -> Bool {
         let srcFormat = file.processingFormat
         guard let converter = AVAudioConverter(from: srcFormat, to: gf) else { return false }
-        // High-quality SRC for 44.1→48 (and other rates). Cheap vs dual-EQ; avoids thin/muddy convert.
-        converter.sampleRateConverterQuality = Int(AVAudioQuality.max.rawValue)
+        // 44.1→48 SRC: max only when cool. Under heat/LPM drop quality a step (big CPU win).
+        converter.sampleRateConverterQuality = Int(Self.preferredSRCQuality.rawValue)
         deck.streamFeedGeneration &+= 1
         let feedGen = deck.streamFeedGeneration
         // ~0.25s source chunks — enough for good SRC without huge buffers.
@@ -1611,21 +1639,39 @@ extension AudioPlayerEngine {
 
     // MARK: - EQ
 
-    /// Push DualEQState → both decks (Target then Fine-Tune on each deck).
-    /// Called whenever `dual` changes (UI / import / presets / restore).
+    /// Push DualEQState onto decks (Target → Fine-Tune order never inverted).
+    ///
+    /// Battery path: only the **active** deck runs EQ processing when not crossfading.
+    /// The inactive deck keeps band/preamp params written underneath `unit.bypass = true`
+    /// so un-bypass before a fade is cheap and click-free. While `isTransitioning`, both
+    /// decks process so the incoming deck already matches Target+Fine before volume rises.
     func applyEQ() {
-        applyEQ(to: deckA)
-        applyEQ(to: deckB)
+        applyEQ(to: activeDeck, processingEnabled: true)
+        applyEQ(to: inactiveDeck, processingEnabled: isTransitioning)
     }
 
-    private func applyEQ(to deck: PlaybackDeck) {
+    /// - Parameter processingEnabled: `false` forces `targetEQ` + `fineEQ` unit bypass
+    ///   (params still written). `true` applies dual/layer bypass rules as usual.
+    private func applyEQ(to deck: PlaybackDeck, processingEnabled: Bool) {
         // Chain: player → targetEQ → fineEQ → mixer (see PlaybackDeck.connect)
         var target = dual.target
         var fine = dual.fineTune
         target.sanitizeForDSP()
         fine.sanitizeForDSP()
-        apply(layer: target, unit: deck.targetEQ, globalBypass: dual.isBypassed, label: "Target")
-        apply(layer: fine, unit: deck.fineEQ, globalBypass: dual.isBypassed, label: "FineTune")
+        // Force-bypass inactive deck: still write F/G/Q + preamp first, then unit.bypass.
+        let forceUnitBypass = !processingEnabled
+        apply(
+            layer: target,
+            unit: deck.targetEQ,
+            globalBypass: dual.isBypassed || forceUnitBypass,
+            label: "Target"
+        )
+        apply(
+            layer: fine,
+            unit: deck.fineEQ,
+            globalBypass: dual.isBypassed || forceUnitBypass,
+            label: "FineTune"
+        )
     }
 
     /// Map one EQLayerState onto one AVAudioUnitEQ (10 peaking bands + preamp).
@@ -1635,6 +1681,8 @@ extension AudioPlayerEngine {
     /// - `gain` → dB peaking gain
     /// - `q` → `bandwidth` in **octaves** via RBJ conversion (Apple has no Q property)
     /// - layer `preamp` → `globalGain` dB
+    ///
+    /// Distortion-safe order: write all bands + globalGain, then set `unit.bypass`.
     private func apply(
         layer: EQLayerState,
         unit: AVAudioUnitEQ,
@@ -1646,6 +1694,7 @@ extension AudioPlayerEngine {
 
         // Always write band parameters even when bypassed so enabling EQ is seamless
         // and we never leave stale F/G/Q from a previous preset on the unit.
+        // Write globalGain while still bypassed / before flipping enabled.
         unit.globalGain = unitBypass ? 0 : Float(layer.preamp)
 
         let nyq = max(sampleRate / 2 - 200, 1_000)
@@ -1672,6 +1721,7 @@ extension AudioPlayerEngine {
             }
         }
 
+        // Last: unit-level bypass after all band params are on the node.
         unit.bypass = unitBypass
 
         #if DEBUG
@@ -1835,7 +1885,7 @@ extension AudioPlayerEngine {
                 self?.handleMemoryPressure()
             }
         }
-        // LPM / thermal: re-apply preferred IO buffer without rebuilding dual-deck graph.
+        // LPM / thermal: larger IO buffers, re-assert inactive EQ bypass, slower progress ticks.
         NotificationCenter.default.addObserver(
             forName: PerformanceMemory.powerModeDidChange,
             object: nil,
@@ -1845,6 +1895,15 @@ extension AudioPlayerEngine {
                 guard let self else { return }
                 let bg = UIApplication.shared.applicationState == .background
                 self.applySessionPowerMode(background: bg)
+                // Re-assert inactive deck EQ bypass (no wasted peaking while warm).
+                if !self.isTransitioning {
+                    self.applyEQ()
+                }
+                // Pick up thermal-aware progress interval immediately.
+                if self.isPlaying {
+                    self.startProgressTimer()
+                    self.armCrossfadeWatch()
+                }
             }
         }
     }
@@ -2197,12 +2256,27 @@ extension AudioPlayerEngine {
         }
     }
 
-    private func showToast(_ msg: String) {
-        toast = msg
-        Task {
-            try? await Task.sleep(nanoseconds: 2_500_000_000)
-            if toast == msg { toast = nil }
+    /// Show a toast that always auto-dismisses. Cancels any previous clear timer.
+    /// External call sites must use this — do not assign `toast` directly.
+    func showToast(_ msg: String, durationSeconds: Double = 2.4) {
+        let text = msg.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        toastClearTask?.cancel()
+        toast = text
+        let hold = min(max(durationSeconds, 1.0), 6.0)
+        toastClearTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(hold * 1_000_000_000))
+            guard let self, !Task.isCancelled else { return }
+            if self.toast == text {
+                self.toast = nil
+            }
         }
+    }
+
+    func clearToast() {
+        toastClearTask?.cancel()
+        toastClearTask = nil
+        toast = nil
     }
 
     // MARK: - Persistence

@@ -9,6 +9,7 @@
 //
 
 import Foundation
+import AVFoundation
 
 struct EQBand: Identifiable, Codable, Equatable, Hashable {
     var id: UUID
@@ -397,25 +398,109 @@ enum BuiltinPresets {
     ]
 }
 
+/// Stable identity for an output port so Target curves can follow devices.
+struct AudioRouteDevice: Identifiable, Codable, Equatable, Hashable {
+    /// `uid:…` when available, else `name:PortName|portType`.
+    var key: String
+    var name: String
+    var portTypeRaw: String
+    /// True when this port is on the active AVAudioSession route right now.
+    var isConnected: Bool = true
+
+    var id: String { key }
+
+    var isBluetooth: Bool {
+        Self.bluetoothPortTypes.contains(portTypeRaw)
+    }
+
+    /// Built-in phone speaker / earpiece — not useful for Target binding.
+    var isBuiltIn: Bool {
+        Self.builtInPortTypes.contains(portTypeRaw)
+    }
+
+    static let bluetoothPortTypes: Set<String> = [
+        AVAudioSession.Port.bluetoothA2DP.rawValue,
+        AVAudioSession.Port.bluetoothLE.rawValue,
+        AVAudioSession.Port.bluetoothHFP.rawValue
+    ]
+
+    static let builtInPortTypes: Set<String> = [
+        AVAudioSession.Port.builtInSpeaker.rawValue,
+        AVAudioSession.Port.builtInReceiver.rawValue
+    ]
+
+    var kindLabel: String {
+        if isBluetooth { return "Bluetooth" }
+        switch portTypeRaw {
+        case AVAudioSession.Port.headphones.rawValue: return "Wired"
+        case AVAudioSession.Port.airPlay.rawValue: return "AirPlay"
+        case AVAudioSession.Port.carAudio.rawValue: return "Car"
+        case "USBAudio", "usbAudio": return "USB"
+        default: return "Output"
+        }
+    }
+}
+
+/// One Target AutoEQ profile bound to one output device.
+struct DeviceTargetAssignment: Identifiable, Codable, Equatable, Hashable {
+    var deviceKey: String
+    var deviceName: String
+    var targetPresetName: String
+
+    var id: String { deviceKey }
+}
+
 @MainActor
 final class EQPresetStore: ObservableObject {
     @Published var targetPresets: [EQPreset] = []
     @Published var fineTunePresets: [EQPreset] = []
     @Published var selectedTargetName: String = "Flat (No Target)"
     @Published var selectedFineTuneName: String = "Flat / Neutral"
+    /// Device key → Target preset name. One Target per device.
+    @Published private(set) var deviceTargetAssignments: [DeviceTargetAssignment] = []
+    /// Devices we’ve seen on the active route (connected now or previously).
+    @Published private(set) var knownDevices: [AudioRouteDevice] = []
+    /// Snapshot of external outputs currently on the route (from the system).
+    @Published private(set) var connectedDevices: [AudioRouteDevice] = []
 
     private let userTargetsKey = "eqtargets.userTargetPresets"
     private let userFineTunesKey = "eqtargets.userFineTunePresets"
+    private let deviceTargetsKey = "eqtargets.deviceTargetAssignments.v1"
+    private let knownDevicesKey = "eqtargets.knownAudioDevices.v1"
+    private var routeObserver: NSObjectProtocol?
 
     init() {
         loadPresets()
+        loadDeviceAssignments()
+        loadKnownDevices()
+        refreshConnectedDevices()
+        routeObserver = NotificationCenter.default.addObserver(
+            forName: AVAudioSession.routeChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.refreshConnectedDevices()
+            }
+        }
     }
+
+    deinit {
+        if let routeObserver {
+            NotificationCenter.default.removeObserver(routeObserver)
+        }
+    }
+
+    // MARK: - Target / Fine-Tune presets
 
     func saveTargetPreset(name: String, layer: EQLayerState) {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        let preset = EQPreset(name: trimmed, layer: layer)
-        targetPresets.append(preset)
+        if let idx = targetPresets.firstIndex(where: { $0.name == trimmed && !$0.isSystemDefault }) {
+            targetPresets[idx].layer = layer
+        } else {
+            targetPresets.append(EQPreset(name: trimmed, layer: layer))
+        }
         selectedTargetName = trimmed
         saveUserPresets()
     }
@@ -432,6 +517,9 @@ final class EQPresetStore: ObservableObject {
     func deleteTargetPreset(_ preset: EQPreset) {
         guard !preset.isSystemDefault else { return }
         targetPresets.removeAll { $0.id == preset.id }
+        // Drop BT bindings that pointed at the deleted curve.
+        deviceTargetAssignments.removeAll { $0.targetPresetName == preset.name }
+        saveDeviceAssignments()
         if selectedTargetName == preset.name {
             selectedTargetName = targetPresets.first?.name ?? "Flat (No Target)"
         }
@@ -446,6 +534,147 @@ final class EQPresetStore: ObservableObject {
         }
         saveUserPresets()
     }
+
+    func preset(named name: String) -> EQPreset? {
+        targetPresets.first { $0.name == name }
+    }
+
+    // MARK: - Connected / known route devices
+
+    /// Re-read `AVAudioSession.currentRoute` — only devices **already connected** (active outputs).
+    /// Safe to call often: **no-ops** when nothing changed (avoids SwiftUI re-render loops).
+    @discardableResult
+    func refreshConnectedDevices() -> [AudioRouteDevice] {
+        let session = AVAudioSession.sharedInstance()
+        // Do NOT force setActive here — can hitch/freeze UI when Now Playing mounts.
+        let outs = session.currentRoute.outputs.compactMap { port -> AudioRouteDevice? in
+            let raw = port.portType.rawValue
+            if AudioRouteDevice.builtInPortTypes.contains(raw) { return nil }
+            let name = port.portName.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty else { return nil }
+            return AudioRouteDevice(
+                key: Self.deviceKey(for: port),
+                name: name,
+                portTypeRaw: raw,
+                isConnected: true
+            )
+        }
+
+        // Early exit if snapshot unchanged — critical: publishing every time freezes Now Playing.
+        if outs == connectedDevices {
+            return outs
+        }
+
+        connectedDevices = outs
+
+        var known = knownDevices
+        var knownChanged = false
+        let liveKeys = Set(outs.map(\.key))
+        for d in outs {
+            if let i = known.firstIndex(where: { $0.key == d.key }) {
+                if known[i] != d {
+                    known[i] = d
+                    knownChanged = true
+                }
+            } else {
+                known.append(d)
+                knownChanged = true
+            }
+        }
+        for i in known.indices {
+            let live = liveKeys.contains(known[i].key)
+            if known[i].isConnected != live {
+                known[i].isConnected = live
+                knownChanged = true
+            }
+        }
+        if knownChanged {
+            knownDevices = known
+            saveKnownDevices()
+        }
+        return outs
+    }
+
+    /// Devices for the Target menu: **connected now**, then known-but-offline.
+    /// Pure read — does **not** refresh (call `refreshConnectedDevices()` on route change / appear).
+    func devicesForAssignmentMenu() -> [AudioRouteDevice] {
+        var byKey: [String: AudioRouteDevice] = [:]
+        for d in connectedDevices { byKey[d.key] = d }
+        for d in knownDevices where byKey[d.key] == nil {
+            var offline = d
+            offline.isConnected = false
+            byKey[d.key] = offline
+        }
+        return byKey.values.sorted { a, b in
+            if a.isConnected != b.isConnected { return a.isConnected && !b.isConnected }
+            return a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
+        }
+    }
+
+    /// Primary external output currently connected (if any). Pure read.
+    var primaryConnectedDevice: AudioRouteDevice? {
+        connectedDevices.first(where: \.isBluetooth) ?? connectedDevices.first
+    }
+
+    static func deviceKey(for port: AVAudioSessionPortDescription) -> String {
+        let uid = port.uid.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !uid.isEmpty { return "uid:\(uid)" }
+        return "name:\(port.portName)|\(port.portType.rawValue)"
+    }
+
+    func devicesAssigned(toTarget name: String) -> [DeviceTargetAssignment] {
+        deviceTargetAssignments.filter { $0.targetPresetName == name }
+    }
+
+    func assignment(forDeviceKey key: String) -> DeviceTargetAssignment? {
+        deviceTargetAssignments.first { $0.deviceKey == key }
+    }
+
+    /// Bind a Target curve to a device (replaces any previous binding for that device).
+    func assignTarget(_ targetName: String, to device: AudioRouteDevice) {
+        let name = targetName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, targetPresets.contains(where: { $0.name == name }) else { return }
+        deviceTargetAssignments.removeAll { $0.deviceKey == device.key }
+        deviceTargetAssignments.append(
+            DeviceTargetAssignment(
+                deviceKey: device.key,
+                deviceName: device.name,
+                targetPresetName: name
+            )
+        )
+        if !knownDevices.contains(where: { $0.key == device.key }) {
+            knownDevices.append(device)
+            saveKnownDevices()
+        }
+        saveDeviceAssignments()
+    }
+
+    func unassignDevice(key: String) {
+        deviceTargetAssignments.removeAll { $0.deviceKey == key }
+        saveDeviceAssignments()
+    }
+
+    func unassignDevice(_ assignment: DeviceTargetAssignment) {
+        unassignDevice(key: assignment.deviceKey)
+    }
+
+    func unassignAllDevices(fromTarget name: String) {
+        deviceTargetAssignments.removeAll { $0.targetPresetName == name }
+        saveDeviceAssignments()
+    }
+
+    /// Target bound to a **currently connected** external output, if any.
+    /// Pure read of last snapshot — call `refreshConnectedDevices()` first from route handlers.
+    func assignedTargetNameForCurrentRoute() -> (targetName: String, device: AudioRouteDevice)? {
+        for device in connectedDevices {
+            if let a = assignment(forDeviceKey: device.key) {
+                return (a.targetPresetName, device)
+            }
+        }
+        return nil
+    }
+
+    // MARK: - Persistence
 
     private func loadPresets() {
         var targets = BuiltinPresets.targets
@@ -472,6 +701,46 @@ final class EQPresetStore: ObservableObject {
         let userFine = fineTunePresets.filter { !$0.isSystemDefault }
         if let data = try? JSONEncoder().encode(userFine) {
             UserDefaults.standard.set(data, forKey: userFineTunesKey)
+        }
+    }
+
+    private func loadDeviceAssignments() {
+        guard let data = UserDefaults.standard.data(forKey: deviceTargetsKey),
+              let list = try? JSONDecoder().decode([DeviceTargetAssignment].self, from: data)
+        else {
+            deviceTargetAssignments = []
+            return
+        }
+        deviceTargetAssignments = list
+    }
+
+    private func saveDeviceAssignments() {
+        if let data = try? JSONEncoder().encode(deviceTargetAssignments) {
+            UserDefaults.standard.set(data, forKey: deviceTargetsKey)
+        }
+    }
+
+    private func loadKnownDevices() {
+        guard let data = UserDefaults.standard.data(forKey: knownDevicesKey),
+              let list = try? JSONDecoder().decode([AudioRouteDevice].self, from: data)
+        else {
+            knownDevices = []
+            return
+        }
+        knownDevices = list.map {
+            var d = $0
+            d.isConnected = false
+            return d
+        }
+    }
+
+    private func saveKnownDevices() {
+        // Persist identity only; connection is refreshed live.
+        let stripped = knownDevices.map {
+            AudioRouteDevice(key: $0.key, name: $0.name, portTypeRaw: $0.portTypeRaw, isConnected: false)
+        }
+        if let data = try? JSONEncoder().encode(stripped) {
+            UserDefaults.standard.set(data, forKey: knownDevicesKey)
         }
     }
 }

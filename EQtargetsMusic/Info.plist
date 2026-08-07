@@ -59,7 +59,7 @@
 	<string>EQtargets Music plays and equalizes audio files you import into the app.</string>
 	<key>UIAppFonts</key>
 	<array>
-		<string>GoogleSansFlex.ttf</string>
+		<string>InterVariable.ttf</string>
 	</array>
 	<!-- Same as Espada: True Tone adapts white point for comfortable long viewing (not Photo). -->
 	<key>UIWhitePointAdaptivityStyle</key>

@@ -13,6 +13,7 @@
 //
 
 import SwiftUI
+import AVFoundation
 
 private enum RootTab: Hashable {
     case nowPlaying
@@ -60,18 +61,20 @@ struct RootTabView: View {
         transitionProgress > PlayerTransitionMetrics.chromeHideThreshold
     }
 
-    /// Fade mini art/title early to avoid duplicate labels with hero (pill frame stays put).
+    /// Snap mini art/title off early (no continuous fade re-layout every drag frame).
+    /// Continuous smoothstep was thrashing MiniPlayer body on the same root progress ticks
+    /// that rebuild Immersive — a pre-glass expand-path cost.
     private var miniContentFade: CGFloat {
-        1 - PlayerTransitionMetrics.smoothstep(
-            PlayerTransitionMetrics.miniContentFadeStart,
-            PlayerTransitionMetrics.miniContentFadeEnd,
-            transitionProgress
-        )
+        transitionProgress < PlayerTransitionMetrics.miniContentFadeStart ? 1 : 0
     }
 
+    /// Mount full player only while expanding / open. Leaving it always-mounted while
+    /// mini-only kept a heavy SwiftUI tree + materials alive (noticeable heat with a track loaded).
+    /// Drag sets presentation = .dragging first so the surface is ready before progress moves.
     private var showPlayerOverlay: Bool {
-        // Keep overlay mounted for any non-zero progress so close never drops to a black plate then pop.
-        hasCurrentPlayableTrack && transitionProgress > 0.001
+        guard hasCurrentPlayableTrack else { return false }
+        if presentation != .collapsed { return true }
+        return transitionProgress > 0.001
     }
 
     private var isExternalDragging: Bool {
@@ -191,7 +194,8 @@ struct RootTabView: View {
                     .zIndex(10)
                 }
 
-                // zIndex 100 — transition / full player surface.
+                // zIndex 100 — full player surface.
+                // Always mounted while a track exists (hidden at progress≈0) so expand drag never pays a cold-compile/layout tax.
                 if showPlayerOverlay {
                     ImmersivePlayerView(
                         progress: $transitionProgress,
@@ -209,12 +213,20 @@ struct RootTabView: View {
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .ignoresSafeArea()
+                    .opacity(transitionProgress > 0.001 ? 1 : 0)
+                    .allowsHitTesting(transitionProgress > 0.5 && !isExternalDragging)
+                    .accessibilityHidden(transitionProgress <= 0.001)
                     .transition(.identity)
                     .zIndex(100)
                 }
             }
             .onPreferenceChange(MiniPlayerArtFrameKey.self) { frame in
-                if frame.width > 1 {
+                // Freeze source rect while dragging so GeometryReader preference
+                // writes don't fight progress-driven Immersive layouts.
+                guard !isExternalDragging, frame.width > 1 else { return }
+                if abs(frame.minX - miniArtGlobalFrame.minX) > 0.5
+                    || abs(frame.minY - miniArtGlobalFrame.minY) > 0.5
+                    || abs(frame.width - miniArtGlobalFrame.width) > 0.5 {
                     miniArtGlobalFrame = frame
                 }
             }
@@ -246,9 +258,15 @@ struct RootTabView: View {
             refreshPlayerArtworkVisuals()
             reconcileWithTrack()
             ensureSmartBPMUpNext()
+            applyTargetForCurrentAudioRoute(reason: "launch")
         }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
             library.flushCatalogIfNeeded()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.routeChangeNotification)) { _ in
+            // Snapshot route first (no-op if unchanged), then maybe load Target.
+            presetStore.refreshConnectedDevices()
+            applyTargetForCurrentAudioRoute(reason: "routeChange")
         }
         .onChange(of: library.isAnalyzingBPM) { analyzing in
             if !analyzing {
@@ -470,6 +488,29 @@ struct RootTabView: View {
         }
     }
 
+    /// When a Bluetooth/external output has a bound Target AutoEQ curve, load it (keep Fine-Tune).
+    private func applyTargetForCurrentAudioRoute(reason: String) {
+        // Refresh only from lifecycle/route handlers — never from SwiftUI body.
+        if reason == "launch" {
+            presetStore.refreshConnectedDevices()
+        }
+        guard let hit = presetStore.assignedTargetNameForCurrentRoute(),
+              let preset = presetStore.preset(named: hit.targetName)
+        else { return }
+        // Skip no-op re-apply (same Target already selected).
+        if presetStore.selectedTargetName == preset.name,
+           player.dual.target == preset.layer {
+            return
+        }
+        player.dual.loadTarget(preset.layer, keepFineTune: true)
+        if presetStore.selectedTargetName != preset.name {
+            presetStore.selectedTargetName = preset.name
+        }
+        if reason == "routeChange" {
+            player.showToast("Target “\(preset.name)” · \(hit.device.name)")
+        }
+    }
+
 }
 
 struct HamburgerMenuSheet: View {
@@ -502,16 +543,22 @@ struct HamburgerMenuSheet: View {
                     accentThemeCard
                 }
                 .padding(16)
-                .padding(.bottom, 12)
+                .padding(.bottom, 28)
             }
-            .grokScrollEdgeBlur()
-            .background { LiquidGlassBackground() }
-            .grokStyleNavigationChrome(title: "Settings", showsMenu: false) {
-                Button("Done") { dismiss() }
-                    .font(.app(size: 15, weight: .bold, design: .rounded))
-                    .foregroundStyle(theme.accent)
+            .scrollIndicators(.visible)
+            .background(Color.clear)
+            .navigationTitle("Settings")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(.hidden, for: .navigationBar)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                        .font(.app(size: 16, weight: .bold, design: .rounded))
+                        .foregroundStyle(theme.accent)
+                }
             }
         }
+        .frostedBleedSheet(accent: theme.accent)
     }
 
     // MARK: - Cards
