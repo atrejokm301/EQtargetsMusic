@@ -40,8 +40,9 @@ enum BPMDetector {
     /// Estimated BPM or nil if analysis fails / low confidence / silence.
     /// Safe off the main actor — file I/O + pure compute only.
     nonisolated static func estimateBPM(fileURL: URL) -> Double? {
-        let accessed = fileURL.startAccessingSecurityScopedResource()
-        defer { if accessed { fileURL.stopAccessingSecurityScopedResource() } }
+        // Don't startAccess on Documents/Music copies (sandbox_extension 22 spam).
+        let accessed = SecurityScopedAccess.startIfNeeded(fileURL)
+        defer { SecurityScopedAccess.stopIfNeeded(fileURL, didStart: accessed) }
 
         guard let file = try? AVAudioFile(forReading: fileURL) else {
             bpmLog.debug("open failed: \(fileURL.lastPathComponent, privacy: .public)")

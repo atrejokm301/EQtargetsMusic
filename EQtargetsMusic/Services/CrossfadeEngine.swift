@@ -285,4 +285,68 @@ enum CrossfadeMath {
         EQBand.bandwidthOctaves(fromQ: q)
     }
 
+    // MARK: - Interrupted fade resolution
+
+    /// Which deck should remain after a soft mid-fade abort (settings change, seek, …).
+    ///
+    /// During a fade, `active` is still the outgoing deck and `inactive` the incoming one
+    /// until progress hits 1 and roles swap. Soft-abort must **not** leave the louder deck
+    /// EQ-bypassed (that used to kill Target+Fine-Tune until force-quit).
+    enum AbortWinner: Equatable {
+        /// Keep playing the outgoing deck; silence incoming.
+        case keepOutgoing
+        /// Commit to the incoming deck (swap roles); silence outgoing.
+        case commitIncoming
+    }
+
+    /// - Parameters:
+    ///   - outgoingVolume / incomingVolume: deck mixer volumes at abort time.
+    ///   - uiTrackIsIncoming: `true` when Now Playing already shows the next track
+    ///     (normal for crossfade v2 after fade start); `nil` if unknown.
+    static func abortWinner(
+        outgoingVolume: Float,
+        incomingVolume: Float,
+        uiTrackIsIncoming: Bool?
+    ) -> AbortWinner {
+        if let uiIsIncoming = uiTrackIsIncoming {
+            return uiIsIncoming ? .commitIncoming : .keepOutgoing
+        }
+        // Prefer the louder deck; tiny bias keeps equal-power midpoint on outgoing.
+        if incomingVolume > outgoingVolume + 0.02 {
+            return .commitIncoming
+        }
+        return .keepOutgoing
+    }
+
+    #if DEBUG
+    /// Lightweight self-check for abort winner rules (no XCTest target yet).
+    static func debugAssertAbortWinnerRules() {
+        precondition(
+            abortWinner(outgoingVolume: 1, incomingVolume: 0, uiTrackIsIncoming: true)
+                == .commitIncoming,
+            "UI already on next track must commit incoming"
+        )
+        precondition(
+            abortWinner(outgoingVolume: 0.1, incomingVolume: 0.9, uiTrackIsIncoming: true)
+                == .commitIncoming,
+            "Loud incoming + UI next → commit"
+        )
+        precondition(
+            abortWinner(outgoingVolume: 0.9, incomingVolume: 0.1, uiTrackIsIncoming: false)
+                == .keepOutgoing,
+            "UI still on current → keep outgoing"
+        )
+        precondition(
+            abortWinner(outgoingVolume: 0.2, incomingVolume: 0.8, uiTrackIsIncoming: nil)
+                == .commitIncoming,
+            "Volume-only late fade → commit incoming"
+        )
+        precondition(
+            abortWinner(outgoingVolume: 0.8, incomingVolume: 0.2, uiTrackIsIncoming: nil)
+                == .keepOutgoing,
+            "Volume-only early fade → keep outgoing"
+        )
+    }
+    #endif
+
 }

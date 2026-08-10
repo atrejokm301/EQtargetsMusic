@@ -4,7 +4,7 @@
 //
 //  Now Playing: EQGraphView stays here + entry to the frosted EQ editor sheet.
 //  Detailed controls (profiles, segment, preamp, 10 vertical bands) live in EQEditorSheet.
-//  Dual EQ chain unchanged: Target → Fine-Tune.
+//  Dual EQ chain: Target → Fine-Tune. Bass Processor is a separate post stage (Wavelet-style).
 //
 
 import SwiftUI
@@ -14,6 +14,7 @@ import AVFoundation
 
 struct EQControlsView: View {
     @Binding var dual: DualEQState
+    @Binding var bass: BassProcessorState
     var onImportAutoEQ: () -> Void
     /// Optional toast when assigning devices (wired from Now Playing / player).
     var onToast: ((String) -> Void)? = nil
@@ -41,6 +42,7 @@ struct EQControlsView: View {
             }
 
             // Graph stays exactly on Now Playing — not moved into the sheet.
+            // Graph shows Target + Fine-Tune only (Bass is post-PEQ, not drawn here).
             EQGraphView(dual: dual)
 
             Button {
@@ -69,6 +71,9 @@ struct EQControlsView: View {
             .buttonStyle(.plain)
             .accessibilityLabel("Open EQ controls")
             .accessibilityHint("Opens Target and Fine-Tune band editor")
+
+            // Independent Bass stage — never writes into Target / Fine-Tune.
+            BassStyleControlsView(bass: $bass)
         }
         .sheet(isPresented: $showEQEditor) {
             EQEditorSheet(
@@ -93,6 +98,214 @@ struct EQControlsView: View {
                 .font(.app(size: 11, weight: .semibold, design: .rounded))
                 .foregroundStyle(theme.secondaryText)
                 .lineLimit(1)
+        }
+    }
+}
+
+// MARK: - Bass Style (post-PEQ effect — separate from Fine-Tune)
+
+/// Controls for the independent Bass Processor.
+/// Binds only `BassProcessorState` — never touches DualEQState / Target / Fine-Tune.
+struct BassStyleControlsView: View {
+    @Binding var bass: BassProcessorState
+    @Environment(\.grokTheme) private var theme
+
+    /// Distinct accent so Bass reads as an *effect*, not another EQ layer.
+    private var bassTint: Color { theme.accentSecondary }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            // Header — clear hierarchy: effect name + “after PEQ” badge
+            HStack(alignment: .top, spacing: 10) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(bassTint.opacity(theme.isDark ? 0.18 : 0.12))
+                        .frame(width: 40, height: 40)
+                    Image(systemName: "speaker.wave.2.bubble.left.fill")
+                        .font(.app(size: 16, weight: .semibold))
+                        .foregroundStyle(bassTint)
+                }
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 6) {
+                        Text("Bass Style")
+                            .font(.app(size: 16, weight: .bold, design: .rounded))
+                            .foregroundStyle(theme.primaryText)
+                        Text("EFFECT")
+                            .font(.app(size: 9, weight: .heavy, design: .rounded))
+                            .foregroundStyle(bassTint)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Capsule().fill(bassTint.opacity(0.16)))
+                    }
+                    Text("Runs after Target + Fine-Tune · never edits AutoEQ")
+                        .font(.app(size: 11, weight: .medium, design: .rounded))
+                        .foregroundStyle(theme.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+            }
+
+            // Style chips — one row; None = icon only; snaps recommended Hz
+            HStack(spacing: 6) {
+                ForEach(BassStyle.allCases) { style in
+                    let selected = bass.style == style
+                    Button {
+                        var next = bass
+                        next.selectStyle(style, applyRecommendedCutoff: true)
+                        bass = next
+                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: style.systemImage)
+                                .font(.app(size: 11, weight: .semibold))
+                            if !style.compactTitle.isEmpty {
+                                Text(style.compactTitle)
+                                    .font(.app(size: 11, weight: .semibold, design: .rounded))
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.85)
+                            }
+                        }
+                        .frame(maxWidth: .infinity)
+                        .foregroundStyle(selected ? theme.background : theme.primaryText)
+                        .padding(.horizontal, style == .none ? 8 : 6)
+                        .padding(.vertical, 8)
+                        .background(
+                            Capsule()
+                                .fill(selected ? bassTint : theme.elevated)
+                        )
+                        .overlay(
+                            Capsule()
+                                .strokeBorder(
+                                    selected ? Color.clear : theme.primaryText.opacity(0.08),
+                                    lineWidth: 1
+                                )
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(style.title)
+                    .accessibilityAddTraits(selected ? .isSelected : [])
+                }
+            }
+
+            if bass.style != .none {
+                // Active style readout
+                HStack(spacing: 6) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.app(size: 12, weight: .semibold))
+                        .foregroundStyle(bassTint)
+                    Text(bass.style.title)
+                        .font(.app(size: 12, weight: .bold, design: .rounded))
+                        .foregroundStyle(theme.primaryText)
+                    Text("·")
+                        .foregroundStyle(theme.tertiaryText)
+                    Text(bass.style.subtitle)
+                        .font(.app(size: 12, weight: .medium, design: .rounded))
+                        .foregroundStyle(theme.secondaryText)
+                        .lineLimit(1)
+                }
+
+                VStack(spacing: 12) {
+                    bassSlider(
+                        title: "Strength",
+                        value: Binding(
+                            get: { bass.strength },
+                            set: { v in
+                                var n = bass
+                                n.strength = v
+                                n.sanitize()
+                                bass = n
+                            }
+                        ),
+                        range: BassProcessorState.strengthRange,
+                        format: { String(format: "%.0f%%", $0 * 100) },
+                        tint: bassTint
+                    )
+
+                    bassSlider(
+                        title: bass.cutoffMatchesStyleRecommendation
+                            ? "Cutoff · recommended"
+                            : "Cutoff",
+                        value: Binding(
+                            get: { bass.cutoff },
+                            set: { v in
+                                var n = bass
+                                n.cutoff = v
+                                n.sanitize()
+                                bass = n
+                            }
+                        ),
+                        range: BassProcessorState.cutoffRange,
+                        format: { String(format: "%.0f Hz", $0) },
+                        tint: bassTint
+                    )
+
+                    bassSlider(
+                        title: "Post gain",
+                        value: Binding(
+                            get: { bass.postGain },
+                            set: { v in
+                                var n = bass
+                                n.postGain = v
+                                n.sanitize()
+                                bass = n
+                            }
+                        ),
+                        range: BassProcessorState.postGainRange,
+                        format: { String(format: "%+.1f dB", $0) },
+                        tint: bassTint
+                    )
+                }
+                .padding(12)
+                .background {
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(theme.isDark ? Color.black.opacity(0.22) : Color.white.opacity(0.28))
+                }
+            }
+        }
+        .padding(14)
+        .background {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(theme.isDark ? Color.white.opacity(0.05) : Color.white.opacity(0.72))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .strokeBorder(
+                            LinearGradient(
+                                colors: [
+                                    bassTint.opacity(theme.isDark ? 0.45 : 0.35),
+                                    Color.white.opacity(theme.isDark ? 0.08 : 0.25)
+                                ],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            ),
+                            lineWidth: 1
+                        )
+                }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Bass Style effect")
+        .accessibilityHint("Independent processor after Target and Fine-Tune")
+    }
+
+    private func bassSlider(
+        title: String,
+        value: Binding<Double>,
+        range: ClosedRange<Double>,
+        format: @escaping (Double) -> String,
+        tint: Color
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(title)
+                    .font(.app(size: 12, weight: .semibold, design: .rounded))
+                    .foregroundStyle(theme.secondaryText)
+                Spacer()
+                Text(format(value.wrappedValue))
+                    .font(.app(size: 12, weight: .bold, design: .rounded))
+                    .foregroundStyle(theme.primaryText)
+                    .monospacedDigit()
+            }
+            Slider(value: value, in: range)
+                .tint(tint)
         }
     }
 }
@@ -437,10 +650,18 @@ struct EQEditorSheet: View {
 
     private var bandsSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("10 bands · Gain · F · Q")
-                .font(.app(size: 11, weight: .semibold, design: .rounded))
-                .foregroundStyle(theme.secondaryText)
-                .padding(.horizontal, 2)
+            HStack(spacing: 6) {
+                Text("10 bands")
+                    .font(.app(size: 11, weight: .semibold, design: .rounded))
+                    .foregroundStyle(theme.secondaryText)
+                Text("·")
+                    .foregroundStyle(theme.tertiaryText)
+                Text("Peak · Low Shelf · High Shelf")
+                    .font(.app(size: 11, weight: .medium, design: .rounded))
+                    .foregroundStyle(theme.tertiaryText)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 2)
 
             ForEach(Array(dual.activeLayer.bands.indices), id: \.self) { i in
                 EQBandVerticalRow(
@@ -534,7 +755,7 @@ struct EQEditorSheet: View {
 
 // MARK: - Vertical band row (modern liquid-glass)
 
-/// Compact band row: soft glass plate, pill index badge, accent-tinted controls, nested F/Q well.
+/// Compact band row: type chips (Peak / L-Shelf / H-Shelf) + gain + F/Q.
 private struct EQBandVerticalRow: View {
     let index: Int
     let band: EQBand
@@ -547,8 +768,8 @@ private struct EQBandVerticalRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            // Header: index pill · gain · enable
-            HStack(spacing: 10) {
+            // Header: index · type · gain · enable
+            HStack(spacing: 8) {
                 Text("B\(index + 1)")
                     .font(.app(size: 11, weight: .bold, design: .rounded))
                     .foregroundStyle(tint)
@@ -563,8 +784,23 @@ private struct EQBandVerticalRow: View {
                             }
                     }
 
+                // Current type badge
+                HStack(spacing: 3) {
+                    Image(systemName: band.filterType.systemImage)
+                        .font(.app(size: 9, weight: .bold))
+                    Text(band.filterType.shortTitle)
+                        .font(.app(size: 10, weight: .bold, design: .rounded))
+                }
+                .foregroundStyle(tint)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .background(
+                    Capsule().fill(tint.opacity(theme.isDark ? 0.14 : 0.10))
+                )
+                .accessibilityLabel("Filter type \(band.filterType.title)")
+
                 Text(String(format: "%+.1f dB", band.gain))
-                    .font(.app(size: 14, weight: .bold, design: .monospaced))
+                    .font(.app(size: 13, weight: .bold, design: .monospaced))
                     .foregroundStyle(
                         abs(band.gain) < 0.05
                             ? theme.secondaryText
@@ -586,7 +822,31 @@ private struct EQBandVerticalRow: View {
                 .accessibilityLabel("Band \(index + 1) enabled")
             }
 
-            // Gain — primary control, full width, accent theme color
+            // Filter type switcher — Peak / Low Shelf / High Shelf
+            HStack(spacing: 4) {
+                ForEach(EQFilterType.allCases) { type in
+                    let selected = band.filterType == type
+                    Button {
+                        onUpdate { $0.filterType = type }
+                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    } label: {
+                        Text(type.shortTitle)
+                            .font(.app(size: 10, weight: .bold, design: .rounded))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 6)
+                            .foregroundStyle(selected ? theme.background : theme.secondaryText)
+                            .background(
+                                Capsule()
+                                    .fill(selected ? tint : theme.elevated)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(type.title)
+                    .accessibilityAddTraits(selected ? .isSelected : [])
+                }
+            }
+
+            // Gain — primary control
             Slider(
                 value: Binding(
                     get: { band.gain },
@@ -597,7 +857,7 @@ private struct EQBandVerticalRow: View {
             .controlSize(.small)
             .tint(tint)
 
-            // Nested F / Q well — secondary params, quieter chrome
+            // Nested F / Q well — Q label adapts for shelves (slope)
             HStack(spacing: 0) {
                 miniParam(
                     label: "F",
@@ -619,7 +879,7 @@ private struct EQBandVerticalRow: View {
                     .padding(.horizontal, 8)
 
                 miniParam(
-                    label: "Q",
+                    label: band.filterType == .peak ? "Q" : "Slope",
                     valueText: String(format: "%.2f", band.q),
                     slider: Slider(
                         value: Binding(
@@ -648,6 +908,7 @@ private struct EQBandVerticalRow: View {
         .background { bandGlassPlate }
         .opacity(band.isEnabled ? 1 : 0.42)
         .animation(.easeOut(duration: 0.18), value: band.isEnabled)
+        .animation(.easeOut(duration: 0.15), value: band.filterType)
     }
 
     private func miniParam<S: View>(label: String, valueText: String, slider: S) -> some View {

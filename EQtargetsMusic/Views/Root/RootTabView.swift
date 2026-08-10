@@ -294,12 +294,14 @@ struct RootTabView: View {
                 SmartShuffleHost.resetSessionState()
             }
         }
-        .onChange(of: transitionProgress) { p in
+        .onChange(of: transitionProgress) { oldP, newP in
             // Snap presentation when progress fully settles without an active drag.
+            // Only act on threshold crossings so we don't thrash state every frame
+            // (device: "onChange(of: CGFloat) action tried to update multiple times per frame").
             if presentation == .dragging { return }
-            if p <= 0.001, presentation != .collapsed {
+            if newP <= 0.001, oldP > 0.001, presentation != .collapsed {
                 presentation = .collapsed
-            } else if p >= 0.99, presentation != .expanded {
+            } else if newP >= 0.99, oldP < 0.99, presentation != .expanded {
                 presentation = .expanded
             }
         }

@@ -2,7 +2,7 @@
 //  EQtargetsMusicApp.swift
 //  EQtargetsMusic
 //
-//  Local music player with dual Target + Fine-Tune PEQ.
+//  Local music player with dual Target + Fine-Tune PEQ + independent Bass Style.
 //  iOS: EQ is in-app only — system-wide interception is not available to third-party apps.
 //
 

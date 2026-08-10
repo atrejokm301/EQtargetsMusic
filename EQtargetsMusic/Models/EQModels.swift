@@ -3,7 +3,9 @@
 //  EQtargetsMusic
 //
 //  Dual-layer parametric EQ (Target + Fine-Tune).
-//  Audio chain: player → Target PEQ → Fine-Tune PEQ → output
+//  Audio chain: player → Target PEQ → Fine-Tune PEQ → Bass Processor → output
+//
+//  Bass Style lives in BassProcessor.swift and NEVER mutates Target / Fine-Tune.
 //  NOTE: iOS cannot apply EQ to other apps (YouTube, Music, Netflix, etc.).
 //  EQ only affects playback inside this app.
 //
@@ -11,12 +13,60 @@
 import Foundation
 import AVFoundation
 
-struct EQBand: Identifiable, Codable, Equatable, Hashable {
+// MARK: - Band filter type (peaking + shelves)
+
+/// Parametric filter shape for Target / Fine-Tune bands.
+/// Defaults to `.peak` for backward compatibility with older presets / AutoEQ.
+enum EQFilterType: String, Codable, CaseIterable, Identifiable, Hashable {
+    case peak
+    case lowShelf
+    case highShelf
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .peak: return "Peak"
+        case .lowShelf: return "Low Shelf"
+        case .highShelf: return "High Shelf"
+        }
+    }
+
+    /// Compact label for band chrome.
+    var shortTitle: String {
+        switch self {
+        case .peak: return "Peak"
+        case .lowShelf: return "L-Shelf"
+        case .highShelf: return "H-Shelf"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .peak: return "waveform.path.ecg"
+        case .lowShelf: return "arrow.down.to.line"
+        case .highShelf: return "arrow.up.to.line"
+        }
+    }
+
+    /// Hardware mapping for `AVAudioUnitEQ`.
+    var avFilterType: AVAudioUnitEQFilterType {
+        switch self {
+        case .peak: return .parametric
+        case .lowShelf: return .lowShelf
+        case .highShelf: return .highShelf
+        }
+    }
+}
+
+struct EQBand: Identifiable, Equatable, Hashable {
     var id: UUID
     var frequency: Double
     var gain: Double
     var q: Double
     var isEnabled: Bool
+    /// Peaking by default — never breaks old JSON without this key.
+    var filterType: EQFilterType
 
     static let frequencyRange: ClosedRange<Double> = 20 ... 20_000
     static let gainRange: ClosedRange<Double> = -20 ... 20
@@ -27,24 +77,27 @@ struct EQBand: Identifiable, Codable, Equatable, Hashable {
         frequency: Double,
         gain: Double = 0,
         q: Double = 1.41,
-        isEnabled: Bool = true
+        isEnabled: Bool = true,
+        filterType: EQFilterType = .peak
     ) {
         self.id = id
         self.frequency = Self.clamp(frequency, to: Self.frequencyRange)
         self.gain = Self.clamp(gain, to: Self.gainRange)
         self.q = Self.clamp(q, to: Self.qRange)
         self.isEnabled = isEnabled
+        self.filterType = filterType
     }
 
     static func defaultTenBands() -> [EQBand] {
         [31.5, 63, 125, 250, 500, 1_000, 2_000, 4_000, 8_000, 16_000]
-            .map { EQBand(frequency: $0) }
+            .map { EQBand(frequency: $0, filterType: .peak) }
     }
 
     mutating func reset() {
         gain = 0
         q = 1.41
         isEnabled = true
+        // Keep filterType — user may have set L-Shelf on band 1 intentionally.
     }
 
     /// Clamp all fields into legal ranges (use after UI mutation / import).
@@ -52,6 +105,9 @@ struct EQBand: Identifiable, Codable, Equatable, Hashable {
         frequency = Self.clamp(frequency, to: Self.frequencyRange)
         gain = Self.clamp(gain, to: Self.gainRange)
         q = Self.clamp(q, to: Self.qRange)
+        if EQFilterType(rawValue: filterType.rawValue) == nil {
+            filterType = .peak
+        }
     }
 
     /// Convert Q-factor → bandwidth in **octaves** for `AVAudioUnitEQ.bandwidth`.
@@ -64,6 +120,33 @@ struct EQBand: Identifiable, Codable, Equatable, Hashable {
 
     private static func clamp(_ v: Double, to r: ClosedRange<Double>) -> Double {
         min(max(v, r.lowerBound), r.upperBound)
+    }
+}
+
+// Codable with default `.peak` when key missing (old presets / AutoEQ imports).
+extension EQBand: Codable {
+    enum CodingKeys: String, CodingKey {
+        case id, frequency, gain, q, isEnabled, filterType
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        frequency = Self.clamp(try c.decode(Double.self, forKey: .frequency), to: Self.frequencyRange)
+        gain = Self.clamp(try c.decodeIfPresent(Double.self, forKey: .gain) ?? 0, to: Self.gainRange)
+        q = Self.clamp(try c.decodeIfPresent(Double.self, forKey: .q) ?? 1.41, to: Self.qRange)
+        isEnabled = try c.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? true
+        filterType = try c.decodeIfPresent(EQFilterType.self, forKey: .filterType) ?? .peak
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(frequency, forKey: .frequency)
+        try c.encode(gain, forKey: .gain)
+        try c.encode(q, forKey: .q)
+        try c.encode(isEnabled, forKey: .isEnabled)
+        try c.encode(filterType, forKey: .filterType)
     }
 }
 
@@ -257,7 +340,12 @@ enum FrequencyResponse {
             return freqs.map { Point(frequency: $0, magnitudeDB: 0) }
         }
         let filters = layer.bands.filter(\.isEnabled).map {
-            PeakBiquad(frequency: $0.frequency, gainDB: $0.gain, q: $0.q)
+            EQBiquad(
+                type: $0.filterType,
+                frequency: $0.frequency,
+                gainDB: $0.gain,
+                q: $0.q
+            )
         }
         return freqs.map { f in
             var m = layer.preamp
@@ -290,21 +378,57 @@ enum FrequencyResponse {
     }
 }
 
-struct PeakBiquad {
+/// RBJ cookbook biquad for graph magnitude (peak + low/high shelf).
+/// Kept separate from AVAudioUnitEQ so the UI curve matches DSP types.
+struct EQBiquad {
     let b0, b1, b2, a0, a1, a2: Double
 
+    /// Backward-compatible peaking constructor.
     init(frequency: Double, gainDB: Double, q: Double, sampleRate: Double = FrequencyResponse.sampleRate) {
+        self.init(type: .peak, frequency: frequency, gainDB: gainDB, q: q, sampleRate: sampleRate)
+    }
+
+    init(
+        type: EQFilterType,
+        frequency: Double,
+        gainDB: Double,
+        q: Double,
+        sampleRate: Double = FrequencyResponse.sampleRate
+    ) {
         let A = pow(10, gainDB / 40)
         let w0 = 2 * .pi * frequency / sampleRate
         let cosW0 = cos(w0)
         let sinW0 = sin(w0)
-        let alpha = sinW0 / (2 * max(q, 0.05))
-        b0 = 1 + alpha * A
-        b1 = -2 * cosW0
-        b2 = 1 - alpha * A
-        a0 = 1 + alpha / A
-        a1 = -2 * cosW0
-        a2 = 1 - alpha / A
+        let safeQ = max(q, 0.05)
+        let alpha = sinW0 / (2 * safeQ)
+
+        switch type {
+        case .peak:
+            b0 = 1 + alpha * A
+            b1 = -2 * cosW0
+            b2 = 1 - alpha * A
+            a0 = 1 + alpha / A
+            a1 = -2 * cosW0
+            a2 = 1 - alpha / A
+
+        case .lowShelf:
+            let twoSqrtAAlpha = 2 * sqrt(A) * alpha
+            b0 = A * ((A + 1) - (A - 1) * cosW0 + twoSqrtAAlpha)
+            b1 = 2 * A * ((A - 1) - (A + 1) * cosW0)
+            b2 = A * ((A + 1) - (A - 1) * cosW0 - twoSqrtAAlpha)
+            a0 = (A + 1) + (A - 1) * cosW0 + twoSqrtAAlpha
+            a1 = -2 * ((A - 1) + (A + 1) * cosW0)
+            a2 = (A + 1) + (A - 1) * cosW0 - twoSqrtAAlpha
+
+        case .highShelf:
+            let twoSqrtAAlpha = 2 * sqrt(A) * alpha
+            b0 = A * ((A + 1) + (A - 1) * cosW0 + twoSqrtAAlpha)
+            b1 = -2 * A * ((A - 1) + (A + 1) * cosW0)
+            b2 = A * ((A + 1) + (A - 1) * cosW0 - twoSqrtAAlpha)
+            a0 = (A + 1) - (A - 1) * cosW0 + twoSqrtAAlpha
+            a1 = 2 * ((A - 1) - (A + 1) * cosW0)
+            a2 = (A + 1) - (A - 1) * cosW0 - twoSqrtAAlpha
+        }
     }
 
     func magnitudeDB(at f: Double, sampleRate: Double = FrequencyResponse.sampleRate) -> Double {
@@ -321,6 +445,9 @@ struct PeakBiquad {
         return 10 * log10(n2 / d2)
     }
 }
+
+/// Legacy name kept for any external references.
+typealias PeakBiquad = EQBiquad
 
 // MARK: - EQ Presets & Storage
 

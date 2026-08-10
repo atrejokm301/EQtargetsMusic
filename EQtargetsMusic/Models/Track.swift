@@ -143,6 +143,50 @@ struct Track: Identifiable, Hashable, Codable {
     }
 }
 
+// MARK: - Security-scoped URL helpers
+
+/// Avoids `sandbox_extension_consume failed: 22` from calling
+/// `startAccessingSecurityScopedResource()` on URLs that are **not** security-scoped.
+///
+/// On iOS, library audio under Documents is already in the app sandbox
+/// (`NSHomeDirectory()`). Calling `startAccessing` on those paths returns false
+/// and spams the console with Invalid argument (22).
+enum SecurityScopedAccess {
+    /// True when the file is already inside this app’s sandbox (or the app bundle).
+    /// Prefer `NSHomeDirectory()` — covers Documents / Library / tmp after reinstall.
+    nonisolated static func isAppContainerURL(_ url: URL) -> Bool {
+        let path = url.standardizedFileURL.resolvingSymlinksInPath().path
+        guard !path.isEmpty else { return false }
+
+        let home = NSHomeDirectory()
+        if path == home || path.hasPrefix(home + "/") { return true }
+
+        let bundlePath = Bundle.main.bundleURL.standardizedFileURL.resolvingSymlinksInPath().path
+        if path == bundlePath || path.hasPrefix(bundlePath + "/") { return true }
+
+        // tmp can theoretically sit outside home on some OS builds
+        let tmp = FileManager.default.temporaryDirectory.standardizedFileURL.resolvingSymlinksInPath().path
+        if path == tmp || path.hasPrefix(tmp + "/") { return true }
+
+        return false
+    }
+
+    /// Start scope only for **external** security-scoped URLs (document picker / bookmarks).
+    /// Returns `true` if the caller must later `stop`.
+    @discardableResult
+    nonisolated static func startIfNeeded(_ url: URL) -> Bool {
+        // Never call startAccessing inside the sandbox — that is the #1 source of
+        // `sandbox_extension_consume failed: 22` during playback of Documents/Music.
+        if isAppContainerURL(url) { return false }
+        return url.startAccessingSecurityScopedResource()
+    }
+
+    nonisolated static func stopIfNeeded(_ url: URL, didStart: Bool) {
+        guard didStart else { return }
+        url.stopAccessingSecurityScopedResource()
+    }
+}
+
 struct ArtistGroup: Identifiable, Hashable {
     var id: String { name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
     let name: String

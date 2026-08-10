@@ -112,6 +112,22 @@
 
 **Key files:** `CrossfadeEngine.swift`, `AudioPlayerEngine.beginCrossfadeV2`, `AutoMixSettingsSheet` in `NowPlayingView.swift`.
 
+**Bugfix (beta — Dual 10-PEQ died after blend length change):** Changing crossfade
+duration mid-fade used to call soft `cancelTransition` without promoting the incoming
+deck. Battery path keeps `targetEQ`+`fineEQ` **bypassed** on the inactive deck, so the
+track you were hearing lost AutoEQ until force-quit. Fix: (1) duration/curve/adaptiveBPM
+no longer abort an in-flight fade — they re-arm for the *next* blend; (2) soft abort
+commits via `CrossfadeMath.abortWinner` + deck swap + `applyEQ`; (3) EOF residual advance
+if completion was invalidated.
+
+### Bass Style (Wavelet-style post stage)
+Signal chain is now:
+`Player → Target PEQ → Fine-Tune PEQ → Bass Processor → Output`
+Bass **never** mutates Target / Fine-Tune / AutoEQ import. State: `BassProcessorState`
+on `AudioPlayerEngine.bass` (persisted `eqtargets.bassProcessor`). Styles: None,
+Transient Punch, Sustain/Rumble, Natural Clean + strength / cutoff / post gain.
+UI: `BassStyleControlsView` under EQ on Now Playing.
+
 ### 5.3 Skip silence v3
 - `SilenceAnalyzer` deeper intro scan, better gate, energy onset, stronger outro.
 - **Off = real Off:** full file, cache keyed by version, **reschedule active deck** on toggle.

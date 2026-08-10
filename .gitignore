@@ -46,3 +46,6 @@ fastlane/test_output
 
 # Archives
 *.xcarchive
+
+# Local device console captures
+logs/

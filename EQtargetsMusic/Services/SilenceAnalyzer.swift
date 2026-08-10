@@ -192,8 +192,9 @@ enum SilenceAnalyzer {
 
     /// Open file and run full analysis (background-safe).
     static func analyzeURL(_ url: URL) -> SilenceTrim? {
-        let access = url.startAccessingSecurityScopedResource()
-        defer { if access { url.stopAccessingSecurityScopedResource() } }
+        // Container paths need no scope; external bookmarks do.
+        let access = SecurityScopedAccess.startIfNeeded(url)
+        defer { SecurityScopedAccess.stopIfNeeded(url, didStart: access) }
         guard let file = try? AVAudioFile(forReading: url) else { return nil }
         return analyze(file)
     }

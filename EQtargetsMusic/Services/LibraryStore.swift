@@ -494,15 +494,16 @@ final class LibraryStore: ObservableObject {
         let musicDir = docs.appendingPathComponent("Music", isDirectory: true)
         try? FileManager.default.createDirectory(at: musicDir, withIntermediateDirectories: true)
 
-        // Hold security scope open for root picks while we enumerate
+        // Hold security scope open for **document-picker** roots while we enumerate.
+        // Skip sandbox-internal URLs (startAccessing them → console error 22).
         var scoped: [URL] = []
         for url in urls {
-            if url.startAccessingSecurityScopedResource() {
+            if SecurityScopedAccess.startIfNeeded(url) {
                 scoped.append(url)
             }
         }
         defer {
-            for u in scoped { u.stopAccessingSecurityScopedResource() }
+            for u in scoped { SecurityScopedAccess.stopIfNeeded(u, didStart: true) }
         }
 
         var fileURLs: [URL] = []
@@ -535,9 +536,9 @@ final class LibraryStore: ObservableObject {
                 await Task.yield()
             }
 
-            // Nested security scope for children of a folder pick
-            let childAccess = url.startAccessingSecurityScopedResource()
-            defer { if childAccess { url.stopAccessingSecurityScopedResource() } }
+            // Nested security scope for children of a folder pick (skip if already sandboxed).
+            let childAccess = SecurityScopedAccess.startIfNeeded(url)
+            defer { SecurityScopedAccess.stopIfNeeded(url, didStart: childAccess) }
 
             let destName = uniqueDestName(for: url, in: musicDir)
             let dest = musicDir.appendingPathComponent(destName)

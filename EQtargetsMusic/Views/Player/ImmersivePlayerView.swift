@@ -189,9 +189,11 @@ struct ImmersivePlayerView: View {
             // Skip / next / crossfade must replace full-player art immediately.
             applyTrackArtwork(forceHeroReload: progress >= 0.55 && !isInteractivelyDragging)
         }
-        .onChange(of: progress) { p in
-            // Load full-res only once open is mostly settled (never mid-drag).
-            if p >= 0.88, !isInteractivelyDragging {
+        .onChange(of: progress) { oldP, newP in
+            // Only when *crossing* the settle threshold — avoids
+            // "onChange(of: CGFloat) tried to update multiple times per frame"
+            // while expand animation ticks progress every frame.
+            if oldP < 0.88, newP >= 0.88, !isInteractivelyDragging {
                 loadHeroArt(maxSide: 380)
             }
         }

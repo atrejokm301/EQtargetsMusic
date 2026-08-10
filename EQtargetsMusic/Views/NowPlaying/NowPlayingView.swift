@@ -30,6 +30,7 @@ struct NowPlayingView: View {
                 // EQ — isolated; must not sit under progressSubject updates.
                 EQControlsView(
                     dual: $player.dual,
+                    bass: $player.bass,
                     onImportAutoEQ: { showImporter = true },
                     onToast: { player.showToast($0) }
                 )
@@ -69,7 +70,7 @@ struct NowPlayingView: View {
         .alert("System-wide EQ on iOS", isPresented: $showSystemWideInfo) {
             Button("Got it", role: .cancel) {}
         } message: {
-            Text("Apple does not allow third-party apps to equalize YouTube, Music, Netflix, or other apps. EQtargets Music applies Target + Fine-Tune only to audio played inside this app.")
+            Text("Apple does not allow third-party apps to equalize YouTube, Music, Netflix, or other apps. EQtargets Music applies Target + Fine-Tune + Bass Style only to audio played inside this app.")
         }
         // Toast is rendered globally from RootTabView so library actions are visible too.
     }
@@ -102,8 +103,9 @@ struct NowPlayingView: View {
             player.showToast(err.localizedDescription)
         case .success(let urls):
             guard let url = urls.first else { return }
-            let access = url.startAccessingSecurityScopedResource()
-            defer { if access { url.stopAccessingSecurityScopedResource() } }
+            // Document picker URLs are security-scoped; sandbox-internal paths are not.
+            let access = SecurityScopedAccess.startIfNeeded(url)
+            defer { SecurityScopedAccess.stopIfNeeded(url, didStart: access) }
             do {
                 let text = try String(contentsOf: url, encoding: .utf8)
                 let layer = try AutoEQParser.parse(text: text)

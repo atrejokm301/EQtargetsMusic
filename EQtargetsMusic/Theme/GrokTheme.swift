@@ -405,7 +405,8 @@ private struct GrokNavChromeModifier<Trailing: View>: ViewModifier {
             // Background (not overlay): veil must not steal scroll gestures.
             .background(alignment: .top) {
                 GeometryReader { geo in
-                    let status = max(geo.safeAreaInsets.top, 47)
+                    // Quantize safe-area-driven height so glass plate is stable across layout passes.
+                    let status = (max(geo.safeAreaInsets.top, 47) / 1).rounded()
                     let fadeHeight = status + 44 + 72
                     GrokLiquidGlassHeaderVeil(height: fadeHeight)
                         .frame(width: geo.size.width, height: fadeHeight, alignment: .top)
@@ -485,6 +486,36 @@ struct FrostedBleedSheetBackground: View {
 
 // MARK: - Liquid Glass header veil (frosted + blurry, short band)
 
+/// Isolated glass plate — `Equatable` so SwiftUI skips rebuilds when only
+/// GeometryReader noise changes. Fixes "glassEffect() tried to update multiple times per frame".
+private struct StableLiquidGlassPlate: View, Equatable {
+    let height: CGFloat
+    let isDark: Bool
+    let clarity: Double
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        abs(lhs.height - rhs.height) < 0.5
+            && lhs.isDark == rhs.isDark
+            && abs(lhs.clarity - rhs.clarity) < 0.001
+    }
+
+    private var glass: Glass {
+        let tint = isDark
+            ? Color.white.opacity(0.04 * clarity)
+            : Color.white.opacity(0.42 * clarity)
+        return .regular.tint(tint).interactive(false)
+    }
+
+    var body: some View {
+        GlassEffectContainer {
+            Color.clear
+                .frame(maxWidth: .infinity)
+                .frame(height: height)
+                .glassEffect(glass, in: Rectangle())
+        }
+    }
+}
+
 /// Frosted Liquid Glass under the nav — **full frost at the very top** (status bar),
 /// then soft dissolve below the title. ~3% more transparent than the first glass pass.
 struct GrokLiquidGlassHeaderVeil: View {
@@ -497,12 +528,10 @@ struct GrokLiquidGlassHeaderVeil: View {
     /// Lower = more transparent. 0.60 ≈ 40% more open than full cover.
     private let clarity: Double = 0.60
 
-    private var glass: Glass {
-        // Liquid Glass tint: cool white sheen (light) / faint white on black (dark).
-        let tint = scheme == .dark
-            ? Color.white.opacity(0.04 * clarity)
-            : Color.white.opacity(0.42 * clarity)
-        return .regular.tint(tint).interactive(false)
+    /// GeometryReader can jitter sub-points every frame; snap so Liquid Glass
+    /// does not rebuild (device: "glassEffect() tried to update multiple times per frame").
+    private var stableHeight: CGFloat {
+        max(1, (height / 2).rounded() * 2)
     }
 
     var body: some View {
@@ -519,12 +548,13 @@ struct GrokLiquidGlassHeaderVeil: View {
                 )
             } else {
                 // 1) Full-height Liquid Glass — NO mask at top so status bar is real frost, not a fade.
-                GlassEffectContainer {
-                    Color.clear
-                        .frame(maxWidth: .infinity)
-                        .frame(height: height)
-                        .glassEffect(glass, in: Rectangle())
-                }
+                // Equatable layer: only rebuild glass when quantized height / scheme changes.
+                StableLiquidGlassPlate(
+                    height: stableHeight,
+                    isDark: scheme == .dark,
+                    clarity: clarity
+                )
+                .equatable()
                 // Only dissolve the *bottom* of the glass; top ~40% stays fully frosted.
                 .mask(bottomOnlyDissolveMask)
 

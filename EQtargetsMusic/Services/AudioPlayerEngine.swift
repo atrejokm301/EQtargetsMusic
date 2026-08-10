@@ -51,13 +51,17 @@ enum ShuffleMode: String, CaseIterable, Identifiable, Codable {
 // CrossfadeSettings / CrossfadeMath → CrossfadeEngine.swift
 // BangerShuffle / SplitMix64 → BangerShuffle.swift
 
-// MARK: - Playback deck (independent PEQ chain)
+// MARK: - Playback deck (independent PEQ + Bass chain)
 
-/// One fully independent deck: Player → Target PEQ → Fine-Tune PEQ → deck mixer.
+/// One fully independent deck:
+/// `Player → Target PEQ → Fine-Tune PEQ → Bass Processor → deck mixer`.
+/// Bass is a separate unit — never written into Target / Fine-Tune state.
 final class PlaybackDeck {
     let player = AVAudioPlayerNode()
     let targetEQ: AVAudioUnitEQ
     let fineEQ: AVAudioUnitEQ
+    /// Post-PEQ bass stage (Wavelet-style). 4 bands: shelf + peaking helpers.
+    let bassEQ: AVAudioUnitEQ
     let mixer = AVAudioMixerNode()
 
     var file: AVAudioFile?
@@ -74,19 +78,22 @@ final class PlaybackDeck {
     init(bandCount: Int = EQLayerState.bandCount) {
         targetEQ = AVAudioUnitEQ(numberOfBands: bandCount)
         fineEQ = AVAudioUnitEQ(numberOfBands: bandCount)
+        bassEQ = AVAudioUnitEQ(numberOfBands: BassProcessorState.bandCount)
     }
 
     func attach(to engine: AVAudioEngine) {
         engine.attach(player)
         engine.attach(targetEQ)
         engine.attach(fineEQ)
+        engine.attach(bassEQ)
         engine.attach(mixer)
     }
 
     func connect(engine: AVAudioEngine, format: AVAudioFormat) {
         engine.connect(player, to: targetEQ, format: format)
         engine.connect(targetEQ, to: fineEQ, format: format)
-        engine.connect(fineEQ, to: mixer, format: format)
+        engine.connect(fineEQ, to: bassEQ, format: format)
+        engine.connect(bassEQ, to: mixer, format: format)
         engine.connect(mixer, to: engine.mainMixerNode, format: format)
     }
 
@@ -94,6 +101,7 @@ final class PlaybackDeck {
         engine.disconnectNodeOutput(player)
         engine.disconnectNodeOutput(targetEQ)
         engine.disconnectNodeOutput(fineEQ)
+        engine.disconnectNodeOutput(bassEQ)
         engine.disconnectNodeOutput(mixer)
     }
 
@@ -124,8 +132,27 @@ final class PlaybackDeck {
 final class AudioPlayerEngine: ObservableObject {
     @Published var dual: DualEQState = .flat {
         didSet {
-            applyEQ()
+            guard oldValue != dual else { return }
             schedulePersistEQ()
+            // Coalesce: init / restore batch loads set `suppressDSPApply` and call applyEQ once.
+            if suppressDSPApply {
+                pendingDSPApply = true
+                return
+            }
+            applyEQ()
+        }
+    }
+
+    /// Independent post-PEQ bass stage. Changing this never mutates `dual` / Target / Fine-Tune.
+    @Published var bass: BassProcessorState = .flat {
+        didSet {
+            guard oldValue != bass else { return }
+            schedulePersistBass()
+            if suppressDSPApply {
+                pendingDSPApply = true
+                return
+            }
+            applyBass()
         }
     }
 
@@ -156,17 +183,27 @@ final class AudioPlayerEngine: ObservableObject {
     @Published var crossfade: CrossfadeSettings = CrossfadeSettings() {
         didSet {
             schedulePersistCrossfade()
-            // Changing duration mid-session: cancel in-flight fade so state stays consistent.
-            if isTransitioning {
+            // Duration / curve / adaptiveBPM apply to the *next* blend only.
+            // Aborting an in-flight fade used to soft-cancel without swapping decks,
+            // leaving the louder (incoming) deck with Target+Fine-Tune unit.bypass
+            // until the app was force-quit — Dual 10-PEQ “died” mid-song.
+            //
+            // Only skipSilence changes the playable window mid-track; interrupt then.
+            let skipSilenceChanged = oldValue.skipSilence != crossfade.skipSilence
+            if isTransitioning, skipSilenceChanged {
                 cancelTransition(hardStopOutgoing: false)
             }
-            // Skip-silence on/off invalidates cached trims (v2 analyzer).
-            if oldValue.skipSilence != crossfade.skipSilence {
+            if skipSilenceChanged {
                 silenceTrimCache.removeAll(keepingCapacity: true)
-                // Re-arm natural fade window against the new playable end.
-                if isPlaying, !isTransitioning {
-                    armCrossfadeWatch()
-                }
+            }
+            // Re-arm so a longer/shorter blend starts at the right remaining time
+            // (e.g. 30→45 while still far from the outro).
+            if isPlaying, !isTransitioning,
+               skipSilenceChanged
+                || oldValue.durationSeconds != crossfade.durationSeconds
+                || oldValue.adaptiveBPM != crossfade.adaptiveBPM
+                || oldValue.curve != crossfade.curve {
+                armCrossfadeWatch()
             }
         }
     }
@@ -203,6 +240,7 @@ final class AudioPlayerEngine: ObservableObject {
     private var graphConnected = false
 
     private let eqDefaultsKey = "eqtargets.dualEQ"
+    private let bassDefaultsKey = "eqtargets.bassProcessor"
     private let crossfadeDefaultsKey = "eqtargets.crossfadeSettings"
     private static let repeatDefaultsKey = "eqtargets.repeatMode"
     private static let shuffleDefaultsKey = "eqtargets.shuffleMode"
@@ -212,9 +250,14 @@ final class AudioPlayerEngine: ObservableObject {
     private var loadGeneration: UInt64 = 0
     private var transitionToken: UInt64 = 0
     private var seekSettleUntilUptime: TimeInterval = 0
-    private var securityScopedURLs: Set<URL> = []
+    /// Refcount of held security scopes keyed by standardized path (bookmark URLs only).
+    private var securityScopedRetainCounts: [String: Int] = [:]
+    /// Serial queue for AVAudioSession configure/activate — keeps blocking calls off main
+    /// (device: "AVAudioSession Hang Risk" when setActive/prefs run on main while playing).
+    private let audioSessionQueue = DispatchQueue(label: "com.eqtargets.music.audiosession")
 
     private var eqPersistTask: Task<Void, Never>?
+    private var bassPersistTask: Task<Void, Never>?
     private var crossfadePersistTask: Task<Void, Never>?
     private var sessionPersistTask: Task<Void, Never>?
     private var sleepTimerTask: Task<Void, Never>?
@@ -248,18 +291,65 @@ final class AudioPlayerEngine: ObservableObject {
     private static let sessionPositionKey = "eqtargets.playbackPosition"
     private var lastPositionPersistUptime: TimeInterval = 0
     private var lastFullSessionSignature: Int = 0
+    /// When playback last stopped/paused (system uptime). `nil` while actively playing.
+    /// Used only for cold-start after long *paused* idle — never while music is playing.
+    private var idleSinceUptime: TimeInterval?
+    /// ~15 min paused is enough to treat as cold; overnight (hours) definitely hits this.
+    private static let longIdleThreshold: TimeInterval = 15 * 60
+
+    /// Last AVAudioSession configuration we applied — avoids re-hitting
+    /// `setCategory` / `setPreferred*` / `setActive` on every track/crossfade
+    /// (device logs: floods of "AVAudioSession Hang Risk" on main thread).
+    private var lastSessionBackground: Bool?
+    private var lastSessionBuffer: TimeInterval = -1
+    private var lastSessionRate: Double = -1
+    private var sessionMarkedActive = false
+    private var sessionCategoryConfigured = false
+
+    /// When true, dual/bass didSet only marks `pendingDSPApply` (no hardware write).
+    /// Used during init load so Target + Fine + Bass apply **once** after the graph exists.
+    private var suppressDSPApply = false
+    private var pendingDSPApply = false
+
+    /// True only when we are **not** playing and have been paused/stopped long enough
+    /// that iOS may have killed the audio session (e.g. 1am pause → 10am open).
+    private var isLongIdleSinceAudio: Bool {
+        guard !isPlaying else { return false }
+        guard let t = idleSinceUptime else { return false }
+        return ProcessInfo.processInfo.systemUptime - t >= Self.longIdleThreshold
+    }
+
+    /// Call when audio is actively running (successful start / play).
+    private func markAudioActivity() {
+        idleSinceUptime = nil
+    }
+
+    /// Call when we intentionally stop rendering (pause / hard stop). Starts the idle clock.
+    private func markAudioIdle() {
+        idleSinceUptime = ProcessInfo.processInfo.systemUptime
+    }
 
     init() {
         activeDeck = deckA
         inactiveDeck = deckB
+        // Load persisted state without N× hardware applies (didSet would fire per assign).
+        // Do not apply inside the suppress block — graph is not attached yet.
+        suppressDSPApply = true
         loadEQ()
+        loadBass()
+        suppressDSPApply = false
+        pendingDSPApply = false
         loadCrossfade()
         loadPlaybackModes()
-        configureSession(forBackground: false)
+        // First session claim — not force-spam on every later play.
+        activatePlaybackSession(background: false, forceActive: false)
         buildStableGraph()
-        applyEQ()
+        applyEQ() // single Target + Fine-Tune + Bass push after graph is attached
         setupRemoteCommands()
         setupLifecycleObservers()
+        #if DEBUG
+        CrossfadeMath.debugAssertAbortWinnerRules()
+        #endif
     }
 
     deinit {
@@ -268,6 +358,7 @@ final class AudioPlayerEngine: ObservableObject {
         crossfadeTimer?.invalidate()
         sleepLabelTimer?.invalidate()
         eqPersistTask?.cancel()
+        bassPersistTask?.cancel()
         crossfadePersistTask?.cancel()
         sessionPersistTask?.cancel()
         sleepTimerTask?.cancel()
@@ -352,20 +443,33 @@ final class AudioPlayerEngine: ObservableObject {
 
     func resume() {
         guard currentTrack != nil else { return }
+        // Overnight / long idle or missing schedule → full load (same as force-quit recovery).
+        if activeDeck.file == nil || isLongIdleSinceAudio, let track = currentTrack {
+            playerLog.info(
+                "resume: cold start (fileNil=\(self.activeDeck.file == nil) longIdle=\(self.isLongIdleSinceAudio))"
+            )
+            loadAndPlay(track, autoSkipMissing: false, autoPlay: true)
+            return
+        }
         do {
             try ensureEngineRunning()
-            if !engine.isRunning { try engine.start() }
             activeDeck.player.play()
             if isTransitioning {
                 inactiveDeck.player.play()
             }
             isPlaying = true
+            markAudioActivity()
             startProgressTimer()
             armCrossfadeWatch()
             applySessionPowerMode(background: UIApplication.shared.applicationState == .background)
             updateNowPlaying(force: true)
         } catch {
-            showToast("Failed to resume")
+            playerLog.error("resume failed: \(error.localizedDescription, privacy: .public) — hard reload")
+            if let track = currentTrack {
+                loadAndPlay(track, autoSkipMissing: false, autoPlay: true)
+            } else {
+                showToast("Couldn't start audio — try Play again")
+            }
         }
     }
 
@@ -373,9 +477,13 @@ final class AudioPlayerEngine: ObservableObject {
         activeDeck.player.pause()
         inactiveDeck.player.pause()
         isPlaying = false
+        markAudioIdle()
         stopProgressTimer()
         cancelAutomixTimer()
-        if engine.isRunning { engine.pause() }
+        // Short pause: keep engine paused. After longIdleThreshold, next Play/Skip does a cold path.
+        if engine.isRunning {
+            engine.pause()
+        }
         flushPersistedSettings()
         persistPlaybackSessionNow()
         updateNowPlaying(force: true)
@@ -1119,7 +1227,15 @@ extension AudioPlayerEngine {
     }
 
     /// Cancel in-flight crossfade. Optionally hard-clear outgoing for skip.
-    private func cancelTransition(hardStopOutgoing: Bool) {
+    ///
+    /// Soft abort (`hardStopOutgoing == false`) **commits to one deck** using
+    /// `CrossfadeMath.abortWinner` so Target+Fine-Tune never stays bypassed on the
+    /// audible path (regression: changing blend length mid-fade killed Dual PEQ).
+    ///
+    /// - Parameter reapplyDSP: When false, only tears down fade state (caller will
+    ///   `applyEQ()` once). Used by `loadAndPlay` to avoid double DSP + log spam.
+    private func cancelTransition(hardStopOutgoing: Bool, reapplyDSP: Bool = true) {
+        let wasTransitioning = isTransitioning
         transitionToken &+= 1
         crossfadeTimer?.invalidate()
         crossfadeTimer = nil
@@ -1129,16 +1245,98 @@ extension AudioPlayerEngine {
         cancelAutomixTimer()
 
         if hardStopOutgoing {
+            // Skip / hard cut: abandon incoming; keep logical active (outgoing).
             inactiveDeck.silenceAndStop()
             inactiveDeck.mixer.outputVolume = 0
+            activeDeck.mixer.outputVolume = 1
+        } else if wasTransitioning {
+            resolveSoftCrossfadeAbort()
         } else {
-            if inactiveDeck.mixer.outputVolume < 0.5 {
-                inactiveDeck.silenceAndStop()
-            }
+            inactiveDeck.silenceAndStop()
+            inactiveDeck.mixer.outputVolume = 0
             activeDeck.mixer.outputVolume = 1
         }
-        // Coherent EQ after abort/skip: active processing ON, inactive bypassed.
-        applyEQ()
+
+        if reapplyDSP {
+            // Active DualEQ + Bass ON; inactive unit-bypassed.
+            applyEQ()
+            if wasTransitioning {
+                // Only log when we actually aborted a live dual-deck fade.
+                playerLog.info(
+                    "EQ reassert after crossfadeAbort hard=\(hardStopOutgoing) dualBypass=\(self.dual.isBypassed) targetFlat=\(self.dual.target.isFlat) fineFlat=\(self.dual.fineTune.isFlat)"
+                )
+            }
+        }
+
+        if reapplyDSP, isPlaying, !isTransitioning {
+            armCrossfadeWatch()
+        }
+    }
+
+    /// Soft mid-fade abort: pick the deck that matches Now Playing (or the louder
+    /// mixer), swap roles if committing to incoming, silence the loser, restore volumes.
+    private func resolveSoftCrossfadeAbort() {
+        // During fade: active = outgoing, inactive = incoming (swap only at progress==1).
+        let outgoing = activeDeck
+        let incoming = inactiveDeck
+        let uiIsIncoming: Bool? = {
+            guard let cur = currentTrack else { return nil }
+            if incoming.track?.id == cur.id { return true }
+            if outgoing.track?.id == cur.id { return false }
+            return nil
+        }()
+        let winner = CrossfadeMath.abortWinner(
+            outgoingVolume: outgoing.mixer.outputVolume,
+            incomingVolume: incoming.mixer.outputVolume,
+            uiTrackIsIncoming: uiIsIncoming
+        )
+
+        switch winner {
+        case .commitIncoming where incoming.file != nil:
+            playerLog.info(
+                "crossfadeAbort: commitIncoming outVol=\(outgoing.mixer.outputVolume, format: .fixed(precision: 2)) inVol=\(incoming.mixer.outputVolume, format: .fixed(precision: 2))"
+            )
+            // Mirror normal fade completion: stop outgoing, promote incoming, EQ via applyEQ().
+            outgoing.streamFeedGeneration &+= 1
+            outgoing.player.stop()
+            outgoing.player.reset()
+            outgoing.mixer.outputVolume = 0
+            outgoing.file = nil
+            outgoing.track = nil
+            incoming.mixer.outputVolume = 1
+            activeDeck = incoming
+            inactiveDeck = outgoing
+            if let t = incoming.track {
+                currentTrack = t
+            }
+            duration = max(incoming.duration, 0.5)
+            // Do not rewrite playbackAnchorSeconds while the node is still running on its
+            // original schedule — playerSeconds already = anchor + node sample time.
+            if let live = playerSeconds(on: incoming) {
+                setCurrentTime(min(max(live, 0), duration))
+            }
+            seekSettleUntilUptime = ProcessInfo.processInfo.systemUptime + 0.08
+            updateNowPlaying(force: true)
+
+        case .commitIncoming:
+            // Incoming never scheduled — fall back to outgoing.
+            fallthrough
+        case .keepOutgoing:
+            playerLog.info(
+                "crossfadeAbort: keepOutgoing outVol=\(outgoing.mixer.outputVolume, format: .fixed(precision: 2)) inVol=\(incoming.mixer.outputVolume, format: .fixed(precision: 2))"
+            )
+            incoming.silenceAndStop()
+            incoming.mixer.outputVolume = 0
+            outgoing.mixer.outputVolume = 1
+            if let t = outgoing.track {
+                currentTrack = t
+                duration = max(outgoing.duration, 0.5)
+                if let live = playerSeconds(on: outgoing) {
+                    setCurrentTime(min(max(live, 0), duration))
+                }
+                updateNowPlaying(force: true)
+            }
+        }
     }
 
     // MARK: - Seek
@@ -1220,7 +1418,8 @@ extension AudioPlayerEngine {
             return
         }
 
-        cancelTransition(hardStopOutgoing: true)
+        // Tear down any in-flight fade without a separate applyEQ — we push DSP once below.
+        cancelTransition(hardStopOutgoing: true, reapplyDSP: false)
         loadGeneration &+= 1
         let gen = loadGeneration
         cancelAutomixTimer()
@@ -1263,8 +1462,7 @@ extension AudioPlayerEngine {
             inactiveDeck.silenceAndStop()
             activeDeck.mixer.outputVolume = 1
             inactiveDeck.mixer.outputVolume = 0
-            if engine.isRunning { /* keep running */ }
-            else { try? engine.start() }
+            // Do not half-start here; ensureEngineRunning below re-activates session + starts cleanly.
         }
 
         sampleRate = gf.sampleRate
@@ -1318,15 +1516,16 @@ extension AudioPlayerEngine {
             if autoPlay {
                 activeDeck.player.play()
                 isPlaying = true
+                markAudioActivity()
                 startProgressTimer()
                 armCrossfadeWatch()
             } else {
-                // Prepared for resume: show mini-player / Now Playing, wait for user Play.
+                // Session restore / prepare: schedule file; Play/Skip after hours uses cold-start path.
                 activeDeck.player.pause()
                 isPlaying = false
+                markAudioIdle()
                 stopProgressTimer()
                 cancelAutomixTimer()
-                if engine.isRunning { engine.pause() }
             }
             // Now Playing metadata after graph is ready (artwork decode shouldn't delay sound).
             updateNowPlaying(force: true)
@@ -1335,7 +1534,45 @@ extension AudioPlayerEngine {
             refineSilenceTrimInBackground(track: track, url: url, generation: gen)
         } catch {
             isPlaying = false
-            showToast("Engine failed to start")
+            playerLog.error("loadAndPlay engine start failed: \(error.localizedDescription, privacy: .public)")
+            // One automatic recovery: session + graph reconnect + start, then re-schedule
+            // (reconnect invalidates any buffers already queued on the player nodes).
+            do {
+                try recoverAudioEngineAndStart()
+                let rescheduled = scheduleOnDeck(
+                    activeDeck,
+                    file: file,
+                    startFrame: max(0, startFrame),
+                    endFrame: max(startFrame + 1, endFrame),
+                    graphFormat: gf,
+                    generation: gen,
+                    onComplete: onEnded
+                )
+                guard rescheduled else {
+                    showToast("Can't schedule “\(track.title)”")
+                    return
+                }
+                if autoPlay {
+                    activeDeck.player.play()
+                    isPlaying = true
+                    markAudioActivity()
+                    startProgressTimer()
+                    armCrossfadeWatch()
+                } else {
+                    activeDeck.player.pause()
+                    isPlaying = false
+                    markAudioIdle()
+                    stopProgressTimer()
+                    cancelAutomixTimer()
+                }
+                consecutiveMissingSkips = 0
+                updateNowPlaying(force: true)
+                schedulePersistPlaybackSession()
+                refineSilenceTrimInBackground(track: track, url: url, generation: gen)
+            } catch {
+                playerLog.error("loadAndPlay recovery failed: \(error.localizedDescription, privacy: .public)")
+                showToast("Couldn't start audio — try Play again")
+            }
         }
     }
 
@@ -1389,15 +1626,22 @@ extension AudioPlayerEngine {
 
     /// Keep AVAudioSession preferred rate locked to the graph (48 kHz).
     private func alignSessionSampleRate(to rate: Double = playbackSampleRate) {
-        let session = AVAudioSession.sharedInstance()
         let target = Self.playbackSampleRate
         _ = rate // API keeps a parameter for call-site clarity
-        do {
-            try session.setPreferredSampleRate(target)
-            // Re-assert without clobbering buffer preference.
-            try session.setActive(true, options: [])
-        } catch {
-            playerLog.debug("session sampleRate align failed: \(error.localizedDescription, privacy: .public)")
+        // Prefer rate only — do not re-setActive on main (Hang Risk + redundant).
+        if abs(lastSessionRate - target) < 0.5, sessionMarkedActive { return }
+        var alignError: Error?
+        audioSessionQueue.sync {
+            do {
+                try AVAudioSession.sharedInstance().setPreferredSampleRate(target)
+            } catch {
+                alignError = error
+            }
+        }
+        if let alignError {
+            playerLog.debug("session sampleRate align failed: \(alignError.localizedDescription, privacy: .public)")
+        } else {
+            lastSessionRate = target
         }
     }
 
@@ -1639,21 +1883,28 @@ extension AudioPlayerEngine {
 
     // MARK: - EQ
 
-    /// Push DualEQState onto decks (Target → Fine-Tune order never inverted).
+    /// Push DualEQState onto decks (Target → Fine-Tune order never inverted),
+    /// then the independent Bass Processor. Bass never mutates Target / Fine-Tune.
     ///
     /// Battery path: only the **active** deck runs EQ processing when not crossfading.
     /// The inactive deck keeps band/preamp params written underneath `unit.bypass = true`
     /// so un-bypass before a fade is cheap and click-free. While `isTransitioning`, both
-    /// decks process so the incoming deck already matches Target+Fine before volume rises.
+    /// decks process so the incoming deck already matches Target+Fine+Bass before volume rises.
     func applyEQ() {
         applyEQ(to: activeDeck, processingEnabled: true)
         applyEQ(to: inactiveDeck, processingEnabled: isTransitioning)
     }
 
-    /// - Parameter processingEnabled: `false` forces `targetEQ` + `fineEQ` unit bypass
-    ///   (params still written). `true` applies dual/layer bypass rules as usual.
+    /// Push only the Bass stage (Target/Fine-Tune units untouched).
+    func applyBass() {
+        applyBass(to: activeDeck, processingEnabled: true)
+        applyBass(to: inactiveDeck, processingEnabled: isTransitioning)
+    }
+
+    /// - Parameter processingEnabled: `false` forces `targetEQ` + `fineEQ` + `bassEQ` unit bypass
+    ///   (params still written). `true` applies dual/layer / bass rules as usual.
     private func applyEQ(to deck: PlaybackDeck, processingEnabled: Bool) {
-        // Chain: player → targetEQ → fineEQ → mixer (see PlaybackDeck.connect)
+        // Chain: player → targetEQ → fineEQ → bassEQ → mixer (see PlaybackDeck.connect)
         var target = dual.target
         var fine = dual.fineTune
         target.sanitizeForDSP()
@@ -1672,6 +1923,43 @@ extension AudioPlayerEngine {
             globalBypass: dual.isBypassed || forceUnitBypass,
             label: "FineTune"
         )
+        // Bass is independent of dual.isBypassed — only style/strength or deck idle gates it.
+        applyBass(to: deck, processingEnabled: processingEnabled)
+    }
+
+    /// Map `BassProcessorState` onto the deck's post-PEQ `bassEQ` unit.
+    private func applyBass(to deck: PlaybackDeck, processingEnabled: Bool) {
+        let params = BassProcessorDSP.unitParams(from: bass, sampleRate: sampleRate)
+        let forceBypass = !processingEnabled
+        let unitBypass = forceBypass || params.unitBypass
+        let unit = deck.bassEQ
+
+        unit.globalGain = unitBypass ? 0 : params.globalGain
+
+        let count = min(unit.bands.count, params.bands.count, BassProcessorState.bandCount)
+        for i in 0 ..< count {
+            let p = params.bands[i]
+            let band = unit.bands[i]
+            band.filterType = p.filterType
+            band.frequency = p.frequency
+            band.gain = p.gain
+            band.bandwidth = max(0.05, min(p.bandwidth, 5.0))
+            band.bypass = unitBypass || p.bypass
+        }
+        if unit.bands.count > count {
+            for i in count ..< unit.bands.count {
+                unit.bands[i].bypass = true
+            }
+        }
+        unit.bypass = unitBypass
+
+        #if DEBUG
+        if !unitBypass {
+            playerLog.debug(
+                "Bass \(self.bass.style.rawValue, privacy: .public): str=\(self.bass.strength, format: .fixed(precision: 2)) fc=\(self.bass.cutoff, format: .fixed(precision: 0))Hz post=\(self.bass.postGain, format: .fixed(precision: 1))dB"
+            )
+        }
+        #endif
     }
 
     /// Map one EQLayerState onto one AVAudioUnitEQ (10 peaking bands + preamp).
@@ -1702,13 +1990,14 @@ extension AudioPlayerEngine {
         for i in 0 ..< count {
             let b = layer.bands[i]
             let band = unit.bands[i]
-            band.filterType = .parametric
+            // Peak / Low Shelf / High Shelf — never force parametric only.
+            band.filterType = b.filterType.avFilterType
             let freq = min(max(b.frequency, EQBand.frequencyRange.lowerBound), min(EQBand.frequencyRange.upperBound, nyq))
             let gain = min(max(b.gain, EQBand.gainRange.lowerBound), EQBand.gainRange.upperBound)
             let q = min(max(b.q, EQBand.qRange.lowerBound), EQBand.qRange.upperBound)
             band.frequency = Float(freq)
             band.gain = Float(gain)
-            // AVAudioUnitEQ peaking uses bandwidth (octaves), not Q.
+            // AVAudioUnitEQ uses bandwidth (octaves) for peaking and shelf slope shape.
             let bw = EQBand.bandwidthOctaves(fromQ: q)
             band.bandwidth = max(0.05, min(bw, 5.0))
             // Per-band off: disabled in UI, or effectively flat gain (save CPU).
@@ -1768,6 +2057,7 @@ extension AudioPlayerEngine {
         crossfadeTimer?.invalidate()
         crossfadeTimer = nil
         isPlaying = false
+        markAudioIdle()
         isTransitioning = false
         deckA.silenceAndStop()
         deckB.silenceAndStop()
@@ -1778,35 +2068,158 @@ extension AudioPlayerEngine {
         inactiveDeck = deckB
     }
 
+    /// Bring AVAudioSession + engine online after idle, BT change, or app resume.
+    /// Failures here used to surface as “Engine failed to start” after Skip/Play
+    /// (classic: music at 1am, Play/Skip next morning).
+    ///
+    /// Cost model: only runs on Play / load / route / foreground-while-playing — never on a timer.
+    /// `setActive` + optional `start` are cheap vs dual-EQ DSP; cold recover is rare (failed start only).
     private func ensureEngineRunning() throws {
-        if !engine.isRunning { try engine.start() }
-    }
+        let background = UIApplication.shared.applicationState == .background
+        activatePlaybackSession(background: background)
 
-    private func configureSession(forBackground: Bool) {
-        let session = AVAudioSession.sharedInstance()
-        do {
-            try session.setCategory(.playback, mode: .default, options: [])
-            // Quality-first when cool (~50ms); thermal/LPM/background use larger buffers.
-            let buf = forBackground
-                ? PerformanceMemory.preferredBackgroundIOBufferDuration
-                : PerformanceMemory.preferredIOBufferDuration
-            try session.setPreferredIOBufferDuration(buf)
-            // Always prefer 48 kHz (graph + modern device path). Battery cost is minor.
-            try session.setPreferredSampleRate(Self.playbackSampleRate)
-            try session.setActive(true)
-        } catch {
-            print("AVAudioSession error: \(error)")
+        // Only when paused long enough: drop a zombie paused engine before start.
+        // Never stop while isPlaying (isLongIdleSinceAudio is false then).
+        if isLongIdleSinceAudio, engine.isRunning {
+            playerLog.info("ensureEngineRunning: long idle → stop before restart")
+            engine.stop()
         }
+
+        if engine.isRunning {
+            // Already rendering or paused-running; do not mark idle clear unless we actually play.
+            return
+        }
+
+        if graphConnected {
+            engine.prepare()
+        }
+
+        do {
+            try engine.start()
+            return
+        } catch {
+            playerLog.error(
+                "engine.start failed: \(error.localizedDescription, privacy: .public) — retry after session re-activate"
+            )
+        }
+
+        if engine.isRunning { engine.stop() }
+        activatePlaybackSession(background: background)
+        if graphConnected {
+            engine.prepare()
+        }
+        try engine.start()
     }
 
-    private func applySessionPowerMode(background: Bool) {
-        let session = AVAudioSession.sharedInstance()
+    /// Full recovery when start still fails (graph/session desync — what force-quit used to fix).
+    private func recoverAudioEngineAndStart() throws {
+        let background = UIApplication.shared.applicationState == .background
+        playerLog.warning("recoverAudioEngine: stop + reconnect + start")
+        if engine.isRunning { engine.stop() }
+        activatePlaybackSession(background: background)
+        if let gf = graphFormat ?? Self.makeGraphFormat() {
+            graphFormat = gf
+            sampleRate = gf.sampleRate
+            connectGraph(format: gf)
+            alignSessionSampleRate(to: Self.playbackSampleRate)
+        }
+        applyEQ()
+        engine.prepare()
+        try engine.start()
+    }
+
+    /// Configure + activate the shared playback session.
+    /// - Parameter forceActive: re-call `setActive(true)` even if we already marked active
+    ///   (interruption end, route change, long-idle resume). Does **not** re-spam
+    ///   setPreferred* when buffer/rate already match — that was a Hang Risk source.
+    ///
+    /// All blocking session APIs run on `audioSessionQueue` (never on main).
+    private func activatePlaybackSession(background: Bool, forceActive: Bool = false) {
         let buf = background
             ? PerformanceMemory.preferredBackgroundIOBufferDuration
             : PerformanceMemory.preferredIOBufferDuration
-        try? session.setPreferredIOBufferDuration(buf)
-        // Rate stays 48 kHz; only buffer duration moves under heat / LPM / background.
-        try? session.setPreferredSampleRate(Self.playbackSampleRate)
+        let rate = Self.playbackSampleRate
+
+        let needsCategory = !sessionCategoryConfigured
+        let needsBuf = abs(lastSessionBuffer - buf) > 0.000_5 || lastSessionBuffer < 0
+        let needsRate = abs(lastSessionRate - rate) > 0.5 || lastSessionRate < 0
+        let needsActive = !sessionMarkedActive || forceActive
+
+        if !needsCategory, !needsBuf, !needsRate, !needsActive {
+            lastSessionBackground = background
+            return
+        }
+
+        // Prefs-only mid-play (thermal buffer): async, never setActive, never block main.
+        let prefsOnly = sessionMarkedActive && !needsActive && (needsBuf || needsRate) && !needsCategory
+
+        if prefsOnly {
+            // Optimistic cache to avoid enqueueing the same prefs repeatedly.
+            lastSessionBackground = background
+            if needsBuf { lastSessionBuffer = buf }
+            if needsRate { lastSessionRate = rate }
+            let applyBuf = needsBuf
+            let applyRate = needsRate
+            audioSessionQueue.async {
+                let session = AVAudioSession.sharedInstance()
+                do {
+                    if applyBuf { try session.setPreferredIOBufferDuration(buf) }
+                    if applyRate { try session.setPreferredSampleRate(rate) }
+                } catch {
+                    // Prefs are best-effort under thermal pressure — log only.
+                    // (Cannot touch playerLog from this nonisolated queue easily; ignore.)
+                }
+            }
+            return
+        }
+
+        var activationError: Error?
+        let work = {
+            let session = AVAudioSession.sharedInstance()
+            do {
+                if needsCategory {
+                    try session.setCategory(.playback, mode: .default, options: [])
+                }
+                // Only touch preferred* when the value actually changes.
+                if needsBuf {
+                    try session.setPreferredIOBufferDuration(buf)
+                }
+                if needsRate {
+                    try session.setPreferredSampleRate(rate)
+                }
+                if needsActive {
+                    try session.setActive(true, options: [])
+                }
+            } catch {
+                activationError = error
+            }
+        }
+
+        if Thread.isMainThread {
+            audioSessionQueue.sync(execute: work)
+        } else {
+            work()
+        }
+
+        if let activationError {
+            sessionMarkedActive = false
+            playerLog.error("AVAudioSession activate: \(activationError.localizedDescription, privacy: .public)")
+            return
+        }
+        lastSessionBackground = background
+        if needsBuf { lastSessionBuffer = buf }
+        if needsRate { lastSessionRate = rate }
+        if needsCategory { sessionCategoryConfigured = true }
+        if needsActive { sessionMarkedActive = true }
+    }
+
+    private func configureSession(forBackground: Bool) {
+        activatePlaybackSession(background: forBackground, forceActive: false)
+    }
+
+    private func applySessionPowerMode(background: Bool) {
+        // Only pushes new preferred IO buffer when thermal/LPM prefs actually differ.
+        activatePlaybackSession(background: background, forceActive: false)
     }
 
     // MARK: - Progress + crossfade arming
@@ -1847,8 +2260,15 @@ extension AudioPlayerEngine {
         ) { [weak self] _ in
             guard let self else { return }
             MainActor.assumeIsolated {
-                self.applySessionPowerMode(background: false)
+                // Re-claim active after background — prefs only if they changed.
+                self.activatePlaybackSession(background: false, forceActive: true)
+                if !self.isPlaying, self.isLongIdleSinceAudio, self.engine.isRunning {
+                    // Overnight paused zombie: stop so next Skip/Play does a clean start.
+                    playerLog.info("foreground: long idle while paused → engine.stop()")
+                    self.engine.stop()
+                }
                 if self.isPlaying {
+                    try? self.ensureEngineRunning()
                     self.startProgressTimer()
                     self.armCrossfadeWatch()
                     self.updateNowPlaying(force: true)
@@ -1872,8 +2292,15 @@ extension AudioPlayerEngine {
         ) { [weak self] _ in
             guard let self else { return }
             MainActor.assumeIsolated {
-                // Keep session alive; do not rebuild graph.
-                try? AVAudioSession.sharedInstance().setActive(true)
+                // BT / headphone plug can drop the session; re-activate so next Play works.
+                self.sessionMarkedActive = false
+                self.activatePlaybackSession(
+                    background: UIApplication.shared.applicationState == .background,
+                    forceActive: true
+                )
+                if self.isPlaying {
+                    try? self.ensureEngineRunning()
+                }
             }
         }
         NotificationCenter.default.addObserver(
@@ -1940,11 +2367,18 @@ extension AudioPlayerEngine {
               let type = AVAudioSession.InterruptionType(rawValue: typeVal) else { return }
         switch type {
         case .began:
+            sessionMarkedActive = false
             pause()
         case .ended:
+            // Session was taken away — force re-claim before resume.
+            sessionMarkedActive = false
             let opts = (info[AVAudioSessionInterruptionOptionKey] as? UInt)
                 .map { AVAudioSession.InterruptionOptions(rawValue: $0) } ?? []
             if opts.contains(.shouldResume) {
+                activatePlaybackSession(
+                    background: UIApplication.shared.applicationState == .background,
+                    forceActive: true
+                )
                 resume()
             }
         @unknown default:
@@ -2052,13 +2486,10 @@ extension AudioPlayerEngine {
     }
 
     private func fireCrossfadeIfNeeded() {
-        guard crossfade.isEnabled, crossfade.duration > 0 else { return }
         guard isPlaying, !isTransitioning, duration > 0 else { return }
         guard ProcessInfo.processInfo.systemUptime >= seekSettleUntilUptime else { return }
         if repeatMode == .one { return }
         guard !queue.isEmpty else { return }
-        let hasNext = queueIndex + 1 < queue.count || repeatMode == .all || shuffleMode != .off
-        guard hasNext else { return }
 
         // Prefer live node time so we don't miss the window when UI time lags.
         if let live = playerSeconds(on: activeDeck) {
@@ -2069,6 +2500,20 @@ extension AudioPlayerEngine {
         }
 
         let remaining = activeRemainingSeconds()
+
+        // Soft mid-fade abort invalidates the scheduled onComplete (transitionToken bump).
+        // If we coast to true EOF without a completion handler, still advance.
+        if remaining <= 0.08 {
+            playerLog.info("crossfadeWatch: EOF residual rem=\(remaining, format: .fixed(precision: 2))s → advance")
+            cancelAutomixTimer()
+            advanceToNextTrack()
+            return
+        }
+
+        guard crossfade.isEnabled, crossfade.duration > 0 else { return }
+        let hasNext = queueIndex + 1 < queue.count || repeatMode == .all || shuffleMode != .off
+        guard hasNext else { return }
+
         let plan = peekCrossfadePlan(remaining: remaining)
         guard plan.isEnabled else { return }
 
@@ -2110,8 +2555,9 @@ extension AudioPlayerEngine {
         if now - lastNowPlayingPush >= 5 {
             updateNowPlaying(force: false)
         }
-        // Backup natural crossfade check on every progress tick
-        if crossfade.isEnabled, !isTransitioning, duration > 0 {
+        // Backup natural crossfade / EOF residual on every progress tick
+        // (EOF residual covers soft-abort after transitionToken invalidated onComplete).
+        if !isTransitioning, duration > 0 {
             fireCrossfadeIfNeeded()
         }
     }
@@ -2120,10 +2566,20 @@ extension AudioPlayerEngine {
 
     private func setupRemoteCommands() {
         let cc = MPRemoteCommandCenter.shared()
+        // Drop any prior handlers (re-init / debug relaunch) so we don't stack targets.
+        // Device logs occasionally show MediaPlayer "cannot add handler to 0 from 0".
+        [
+            cc.playCommand, cc.pauseCommand, cc.togglePlayPauseCommand,
+            cc.nextTrackCommand, cc.previousTrackCommand, cc.changePlaybackPositionCommand
+        ].forEach { $0.removeTarget(nil) }
+
         cc.playCommand.isEnabled = true
         cc.playCommand.addTarget { [weak self] _ in
             Task { @MainActor in
-                try? AVAudioSession.sharedInstance().setActive(true)
+                self?.activatePlaybackSession(
+                    background: UIApplication.shared.applicationState == .background,
+                    forceActive: true
+                )
                 self?.resume()
             }
             return .success
@@ -2136,7 +2592,10 @@ extension AudioPlayerEngine {
         cc.togglePlayPauseCommand.isEnabled = true
         cc.togglePlayPauseCommand.addTarget { [weak self] _ in
             Task { @MainActor in
-                try? AVAudioSession.sharedInstance().setActive(true)
+                self?.activatePlaybackSession(
+                    background: UIApplication.shared.applicationState == .background,
+                    forceActive: true
+                )
                 self?.togglePlayPause()
             }
             return .success
@@ -2290,6 +2749,15 @@ extension AudioPlayerEngine {
         }
     }
 
+    private func schedulePersistBass() {
+        bassPersistTask?.cancel()
+        bassPersistTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            guard let self, !Task.isCancelled else { return }
+            self.persistBassNow()
+        }
+    }
+
     private func schedulePersistCrossfade() {
         crossfadePersistTask?.cancel()
         crossfadePersistTask = Task { @MainActor [weak self] in
@@ -2301,9 +2769,11 @@ extension AudioPlayerEngine {
 
     private func flushPersistedSettings() {
         eqPersistTask?.cancel()
+        bassPersistTask?.cancel()
         crossfadePersistTask?.cancel()
         sessionPersistTask?.cancel()
         persistEQNow()
+        persistBassNow()
         persistCrossfadeNow()
         persistPlaybackSessionNow()
     }
@@ -2383,6 +2853,21 @@ extension AudioPlayerEngine {
         dual = decoded
     }
 
+    private func persistBassNow() {
+        if let data = try? JSONEncoder().encode(bass) {
+            UserDefaults.standard.set(data, forKey: bassDefaultsKey)
+        }
+    }
+
+    private func loadBass() {
+        guard let data = UserDefaults.standard.data(forKey: bassDefaultsKey),
+              let decoded = try? JSONDecoder().decode(BassProcessorState.self, from: data) else { return }
+        var b = decoded
+        b.sanitize()
+        // Assign without double-apply: set storage then apply once from init.
+        bass = b
+    }
+
     private func persistCrossfadeNow() {
         if let data = try? JSONEncoder().encode(crossfade) {
             UserDefaults.standard.set(data, forKey: crossfadeDefaultsKey)
@@ -2411,24 +2896,43 @@ extension AudioPlayerEngine {
 
     // MARK: - Security scope
 
+    private func securityScopeKey(for url: URL) -> String {
+        url.resolvingSymlinksInPath().path
+    }
+
+    /// Hold a security scope for bookmark / external URLs only.
+    /// Documents/Music copies are already in-container — starting a scope there
+    /// produces `sandbox_extension_consume failed: 22` spam on every open.
     private func retainSecurityAccess(for url: URL) {
-        if url.startAccessingSecurityScopedResource() {
-            securityScopedURLs.insert(url)
+        // Documents/Music and other sandbox paths must not call startAccessing.
+        if SecurityScopedAccess.isAppContainerURL(url) { return }
+        let key = securityScopeKey(for: url)
+        if let count = securityScopedRetainCounts[key] {
+            securityScopedRetainCounts[key] = count + 1
+            return
+        }
+        // Only external security-scoped URLs; false → no retain (and no error 22 if container check worked).
+        if SecurityScopedAccess.startIfNeeded(url) {
+            securityScopedRetainCounts[key] = 1
         }
     }
 
     private func releaseSecurityAccess(for url: URL) {
-        if securityScopedURLs.contains(url) {
-            url.stopAccessingSecurityScopedResource()
-            securityScopedURLs.remove(url)
+        let key = securityScopeKey(for: url)
+        guard let count = securityScopedRetainCounts[key] else { return }
+        if count <= 1 {
+            SecurityScopedAccess.stopIfNeeded(url, didStart: true)
+            securityScopedRetainCounts.removeValue(forKey: key)
+        } else {
+            securityScopedRetainCounts[key] = count - 1
         }
     }
 
     private func clearAllSecurityAccess() {
-        for url in securityScopedURLs {
-            url.stopAccessingSecurityScopedResource()
+        for (path, _) in securityScopedRetainCounts {
+            URL(fileURLWithPath: path).stopAccessingSecurityScopedResource()
         }
-        securityScopedURLs.removeAll()
+        securityScopedRetainCounts.removeAll()
     }
 }
 
