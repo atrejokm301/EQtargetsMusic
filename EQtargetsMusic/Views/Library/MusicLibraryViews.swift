@@ -58,16 +58,13 @@ struct MusicListView: View {
                 return $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
             }
         case .album:
+            // Album name, then same disc/track rules as album detail (live albums stay sequential).
             return tracks.sorted {
                 let c = $0.album.localizedCaseInsensitiveCompare($1.album)
                 if c != .orderedSame { return c == .orderedAscending }
-                let discA = $0.discNumber ?? 1
-                let discB = $1.discNumber ?? 1
-                if discA != discB { return discA < discB }
-                let tA = $0.trackNumber ?? 999
-                let tB = $1.trackNumber ?? 999
-                if tA != tB { return tA < tB }
-                return $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
+                let art = $0.artist.localizedCaseInsensitiveCompare($1.artist)
+                if art != .orderedSame { return art == .orderedAscending }
+                return LibraryStore.albumPlaybackOrder($0, $1)
             }
         case .duration:
             return tracks.sorted {
@@ -347,14 +344,15 @@ struct ArtistDetailView: View {
         List {
             ForEach(artist.albums) { album in
                 Section {
-                    ForEach(Array(album.tracks.enumerated()), id: \.element.id) { index, track in
+                    let ordered = album.tracks.sorted(by: LibraryStore.albumPlaybackOrder)
+                    ForEach(Array(ordered.enumerated()), id: \.element.id) { index, track in
                         Button {
-                            player.play(tracks: album.tracks, startAt: index)
+                            player.play(tracks: ordered, startAt: index)
                         } label: {
                             TrackRowView(
                                 track: track,
                                 isPlaying: player.currentTrack?.id == track.id,
-                                trackIndex: track.trackNumber ?? (index + 1)
+                                trackIndex: LibraryStore.inferredTrackNumber(for: track) ?? (index + 1)
                             )
                         }
                         .listRowBackground(Color.clear)
@@ -403,7 +401,8 @@ struct ArtistDetailView: View {
         .scrollContentBackground(.hidden)
         .grokScrollEdgeBlur()
         .background { theme.background.ignoresSafeArea() }
-        .grokStyleNavigationChrome(title: artist.name, showsBack: true, showsMenu: false) {
+        // Keep hamburger available on detail (back + menu); users expect Settings from album art flows.
+        .grokStyleNavigationChrome(title: artist.name, showsBack: true, showsMenu: true) {
             Button(role: .destructive) {
                 library.deleteArtist(artist)
             } label: {
@@ -511,16 +510,21 @@ struct AlbumDetailView: View {
     @EnvironmentObject private var player: AudioPlayerEngine
     @Environment(\.grokTheme) private var theme
 
+    /// Always re-apply album playback order (tags + filename) so stale groups can’t A–Z live sets.
+    private var orderedTracks: [Track] {
+        album.tracks.sorted(by: LibraryStore.albumPlaybackOrder)
+    }
+
     var body: some View {
         List {
-            ForEach(Array(album.sortedTracks.enumerated()), id: \.element.id) { index, track in
+            ForEach(Array(orderedTracks.enumerated()), id: \.element.id) { index, track in
                 Button {
-                    player.play(tracks: album.sortedTracks, startAt: index)
+                    player.play(tracks: orderedTracks, startAt: index)
                 } label: {
                     TrackRowView(
                         track: track,
                         isPlaying: player.currentTrack?.id == track.id,
-                        trackIndex: track.trackNumber ?? (index + 1)
+                        trackIndex: LibraryStore.inferredTrackNumber(for: track) ?? (index + 1)
                     )
                 }
                 .listRowBackground(Color.clear)
@@ -551,7 +555,7 @@ struct AlbumDetailView: View {
         .scrollContentBackground(.hidden)
         .grokScrollEdgeBlur()
         .background { theme.background.ignoresSafeArea() }
-        .grokStyleNavigationChrome(title: album.name, showsBack: true, showsMenu: false) {
+        .grokStyleNavigationChrome(title: album.name, showsBack: true, showsMenu: true) {
             Button(role: .destructive) {
                 library.deleteAlbum(album)
             } label: {

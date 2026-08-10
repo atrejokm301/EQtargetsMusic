@@ -42,7 +42,14 @@ struct ImmersivePlayerView: View {
     @State private var heroImage: UIImage?
     @State private var heroTrackID: UUID?
     @State private var heroLoadTask: Task<Void, Never>?
+    /// Bumps on each hero load start so stale async completions cannot clobber a newer track.
+    @State private var heroLoadGeneration: UInt = 0
+    /// True once `heroImage` is the high-res file cover (or best available decode), not the ~96px catalog thumb.
+    @State private var heroIsHighRes = false
     @State private var backdropImage: UIImage?
+
+    /// Match Lock Screen preload size so expand drag hits `ArtworkImageCache` immediately when possible.
+    private static let heroMaxSide: CGFloat = ArtworkImageCache.playerHeroMaxPointSide
 
     /// Cached room colors — never recompute UIColor/getHue on every progress tick.
     @State private var cachedAtmosLite: [Color] = []
@@ -170,11 +177,13 @@ struct ImmersivePlayerView: View {
         .ignoresSafeArea()
         .contentShape(Rectangle())
         .onAppear {
-            applyTrackArtwork(forceHeroReload: progress >= 0.55)
+            // Overlay stays mounted while a track exists (progress≈0). Warm high-res
+            // immediately so a slow mini→full pull never paints only the 96px list thumb.
+            applyTrackArtwork(forceHeroReload: true)
         }
         .onChange(of: artworkVisuals.trackID) { _ in
-            // Root refreshed visuals for a new track — always swap hero (lock-screen already does).
-            applyTrackArtwork(forceHeroReload: progress >= 0.55 && !isInteractivelyDragging)
+            // Root refreshed visuals for a new track — always swap + upgrade hero.
+            applyTrackArtwork(forceHeroReload: true)
         }
         .onChange(of: player.currentTrack?.id) { id in
             if id == nil {
@@ -187,14 +196,19 @@ struct ImmersivePlayerView: View {
                 return
             }
             // Skip / next / crossfade must replace full-player art immediately.
-            applyTrackArtwork(forceHeroReload: progress >= 0.55 && !isInteractivelyDragging)
+            applyTrackArtwork(forceHeroReload: true)
+        }
+        .onChange(of: isExternalDragging) { _, dragging in
+            // Finger expand: start (or re-hit) hero load on first drag frame — do not wait for settle.
+            if dragging {
+                loadHeroArt(maxSide: Self.heroMaxSide)
+            }
         }
         .onChange(of: progress) { oldP, newP in
-            // Only when *crossing* the settle threshold — avoids
-            // "onChange(of: CGFloat) tried to update multiple times per frame"
-            // while expand animation ticks progress every frame.
-            if oldP < 0.88, newP >= 0.88, !isInteractivelyDragging {
-                loadHeroArt(maxSide: 380)
+            // Threshold crossings only — avoids multi-update-per-frame warnings.
+            // Expand start: upgrade art while the cover is still small→medium (slow pull).
+            if oldP < 0.02, newP >= 0.02 {
+                loadHeroArt(maxSide: Self.heroMaxSide)
             }
         }
         .sheet(isPresented: $showQueue) {
@@ -584,7 +598,7 @@ struct ImmersivePlayerView: View {
         seedBackdropFromVisuals(replaceHero: true)
         refreshCachedAtmosphere()
         if forceHeroReload {
-            loadHeroArt(maxSide: 380)
+            loadHeroArt(maxSide: Self.heroMaxSide)
         }
     }
 
@@ -595,25 +609,38 @@ struct ImmersivePlayerView: View {
             backdropImage = nil
             heroImage = nil
             heroTrackID = nil
+            heroIsHighRes = false
             cachedAtmosLite = []
             cachedAtmosFull = []
             cachedAtmosTrackID = nil
         }
     }
 
-    private func seedBackdropFromVisuals(replaceHero: Bool = true) {
-        let trackID = artworkVisuals.trackID ?? player.currentTrack?.id
+    /// Prefer already-decoded high-res (Lock Screen / prior expand); fall back to catalog thumb.
+    private func immediateArt(for trackID: UUID) -> (image: UIImage, isHighRes: Bool)? {
+        if let hi = ArtworkImageCache.cachedHero(trackID: trackID, maxPointSide: Self.heroMaxSide) {
+            return (hi, true)
+        }
         if let thumb = artworkVisuals.thumb
             ?? player.currentTrack.flatMap({ ArtworkImageCache.image(trackID: $0.id, data: $0.artworkData) }) {
+            return (thumb, false)
+        }
+        return nil
+    }
+
+    private func seedBackdropFromVisuals(replaceHero: Bool = true) {
+        let trackID = artworkVisuals.trackID ?? player.currentTrack?.id
+        if let trackID, let immediate = immediateArt(for: trackID) {
             let trackChanged = heroTrackID != trackID
-            if trackChanged || backdropImage == nil || (replaceHero && heroImage == nil) {
+            if trackChanged || backdropImage == nil || (replaceHero && (heroImage == nil || !heroIsHighRes)) {
                 var t = Transaction()
                 t.disablesAnimations = true
                 withTransaction(t) {
-                    backdropImage = thumb
+                    backdropImage = immediate.image
                     // Always replace hero on track change — never keep previous song's UIImage.
-                    if replaceHero || trackChanged || heroImage == nil {
-                        heroImage = thumb
+                    if replaceHero || trackChanged || heroImage == nil || (!heroIsHighRes && immediate.isHighRes) {
+                        heroImage = immediate.image
+                        heroIsHighRes = immediate.isHighRes
                     }
                     heroTrackID = trackID
                 }
@@ -629,6 +656,7 @@ struct ImmersivePlayerView: View {
                     heroImage = nil
                     backdropImage = nil
                     heroTrackID = trackID
+                    heroIsHighRes = false
                 }
             }
         }
@@ -638,7 +666,25 @@ struct ImmersivePlayerView: View {
         guard let track = player.currentTrack else { return }
         let trackID = track.id
 
-        // Immediate thumb swap so UI never lags a full-res decode.
+        // Already upgraded for this track — nothing to do (common after Lock Screen preload).
+        if heroIsHighRes, heroTrackID == trackID, heroImage != nil {
+            return
+        }
+
+        // Synchronous cache hit (Now Playing often preloaded the same key).
+        if let cached = ArtworkImageCache.cachedHero(trackID: trackID, maxPointSide: maxSide) {
+            var t = Transaction()
+            t.disablesAnimations = true
+            withTransaction(t) {
+                heroImage = cached
+                backdropImage = cached
+                heroTrackID = trackID
+                heroIsHighRes = true
+            }
+            return
+        }
+
+        // Immediate thumb so the morph never blanks while the file decode runs.
         let thumb = artworkVisuals.thumb
             ?? ArtworkImageCache.image(trackID: track.id, data: track.artworkData)
         if heroTrackID != trackID || heroImage == nil, let thumb {
@@ -648,16 +694,26 @@ struct ImmersivePlayerView: View {
                 heroImage = thumb
                 backdropImage = thumb
                 heroTrackID = trackID
+                heroIsHighRes = false
             }
         } else if heroTrackID != trackID {
             var t = Transaction()
             t.disablesAnimations = true
             withTransaction(t) {
                 heroTrackID = trackID
+                heroIsHighRes = false
             }
         }
 
+        // Drag + progress thresholds can re-enter while a decode is already running —
+        // don't cancel/restart (would delay the high-res swap mid-pull).
+        if heroTrackID == trackID, heroLoadTask != nil {
+            return
+        }
+
         heroLoadTask?.cancel()
+        heroLoadGeneration &+= 1
+        let generation = heroLoadGeneration
         let thumbData = track.artworkData
         let url = track.resolvedURL()
         heroLoadTask = Task {
@@ -669,6 +725,7 @@ struct ImmersivePlayerView: View {
             )
             guard !Task.isCancelled else { return }
             await MainActor.run {
+                guard generation == heroLoadGeneration else { return }
                 guard player.currentTrack?.id == trackID else { return }
                 if let img {
                     var t = Transaction()
@@ -677,8 +734,10 @@ struct ImmersivePlayerView: View {
                         heroImage = img
                         backdropImage = img
                         heroTrackID = trackID
+                        heroIsHighRes = true
                     }
                 }
+                heroLoadTask = nil
             }
         }
     }

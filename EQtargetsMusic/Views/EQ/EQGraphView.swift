@@ -2,6 +2,10 @@
 //  EQGraphView.swift
 //  EQtargetsMusic
 //
+//  Premium frequency-response plot (plugin-style, 2025–26).
+//  Performance: 96 log points, debounced updates, skip redraw when dual unchanged,
+//  no heavy blur / continuous animation / complex shaders.
+//
 
 import SwiftUI
 
@@ -14,139 +18,359 @@ struct EQGraphView: View {
     @State private var combinedPoints: [FrequencyResponse.Point] = []
     @State private var targetPoints: [FrequencyResponse.Point] = []
     @State private var finePoints: [FrequencyResponse.Point] = []
+    @State private var peak: FrequencyResponse.Peak?
+    @State private var lastDual: DualEQState?
     @State private var graphUpdateTask: Task<Void, Never>?
 
     private let xTicks: [Double] = [20, 50, 100, 200, 500, 1_000, 2_000, 5_000, 10_000, 20_000]
     private let yTicks: [Double] = [-20, -10, 0, 10, 20]
 
+    /// Plot inset: left for dB labels, bottom for Hz labels, top for peak chip.
+    private let plotInsets = EdgeInsets(top: 18, leading: 34, bottom: 22, trailing: 10)
+
     var body: some View {
         GeometryReader { geo in
-            let plot = CGRect(x: 36, y: 12, width: max(geo.size.width - 48, 1), height: max(geo.size.height - 32, 1))
+            let plot = CGRect(
+                x: plotInsets.leading,
+                y: plotInsets.top,
+                width: max(geo.size.width - plotInsets.leading - plotInsets.trailing, 1),
+                height: max(geo.size.height - plotInsets.top - plotInsets.bottom, 1)
+            )
 
             ZStack {
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(theme.isDark ? Color.white.opacity(0.03) : Color.clear)
-                    .background {
-                        if !theme.isDark {
-                            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                .fill(.ultraThinMaterial)
-                        }
-                    }
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 16, style: .continuous)
-                            .fill(theme.isDark ? Color.white.opacity(0.02) : Color.black.opacity(0.03))
-                    }
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 16, style: .continuous)
-                            .strokeBorder(
-                                Color.white.opacity(theme.isDark ? 0.08 : 0.15),
-                                lineWidth: 0.5
-                            )
-                    }
+                // Chassis
+                chassis
 
+                // Grid + curves (Canvas = one draw pass, cheap)
                 Canvas { ctx, _ in
-                    for f in xTicks {
-                        let x = plot.minX + FrequencyResponse.xPosition(f) * plot.width
-                        var p = Path()
-                        p.move(to: CGPoint(x: x, y: plot.minY))
-                        p.addLine(to: CGPoint(x: x, y: plot.maxY))
-                        ctx.stroke(p, with: .color(theme.separator), lineWidth: 1)
+                    drawGrid(ctx: ctx, plot: plot)
+                    if !dual.isBypassed {
+                        // Underlays: Target + Fine (faint)
+                        if !dual.target.isBypassed, !targetPoints.isEmpty {
+                            strokeCurve(
+                                ctx: ctx,
+                                points: targetPoints,
+                                plot: plot,
+                                color: theme.targetTint.opacity(0.38),
+                                lineWidth: 1.15,
+                                dash: [4, 3]
+                            )
+                        }
+                        if !dual.fineTune.isBypassed, !dual.fineTune.isFlat, !finePoints.isEmpty {
+                            strokeCurve(
+                                ctx: ctx,
+                                points: finePoints,
+                                plot: plot,
+                                color: theme.fineTint.opacity(0.42),
+                                lineWidth: 1.15,
+                                dash: [2, 3]
+                            )
+                        }
+                        // Combined fill + soft “glow” (double stroke, no blur) + main line
+                        if !combinedPoints.isEmpty {
+                            fillUnderCurve(ctx: ctx, points: combinedPoints, plot: plot)
+                            strokeCurve(
+                                ctx: ctx,
+                                points: combinedPoints,
+                                plot: plot,
+                                color: theme.accent.opacity(0.22),
+                                lineWidth: 5.5,
+                                dash: nil
+                            )
+                            strokeCurve(
+                                ctx: ctx,
+                                points: combinedPoints,
+                                plot: plot,
+                                color: nil,
+                                gradient: true,
+                                lineWidth: 2.2,
+                                dash: nil
+                            )
+                        }
+                    } else {
+                        // Flat reference when global bypass
+                        var mid = Path()
+                        let y0 = yFor(0, plot: plot)
+                        mid.move(to: CGPoint(x: plot.minX, y: y0))
+                        mid.addLine(to: CGPoint(x: plot.maxX, y: y0))
+                        ctx.stroke(mid, with: .color(theme.secondaryText.opacity(0.35)), lineWidth: 1.2)
                     }
-                    for g in yTicks {
-                        let t = (g - yRange.lowerBound) / (yRange.upperBound - yRange.lowerBound)
-                        let y = plot.maxY - t * plot.height
-                        var p = Path()
-                        p.move(to: CGPoint(x: plot.minX, y: y))
-                        p.addLine(to: CGPoint(x: plot.maxX, y: y))
-                        ctx.stroke(
-                            p,
-                            with: .color(abs(g) < 0.01 ? theme.secondaryText.opacity(0.35) : theme.separator),
-                            lineWidth: abs(g) < 0.01 ? 1.2 : 1
-                        )
-                    }
+                }
+                .drawingGroup(opaque: false) // flatten once; avoid per-layer blur cost
+
+                // Axis labels (SwiftUI Text — Canvas text is awkward)
+                dBLabels(plot: plot)
+                frequencyLabels(plot: plot)
+
+                // Peak callout
+                if !dual.isBypassed, let peak {
+                    peakMarker(peak, plot: plot)
                 }
 
-                if !dual.isBypassed && !dual.target.isBypassed {
-                    path(targetPoints, plot: plot)
-                        .stroke(theme.targetTint.opacity(0.65), style: StrokeStyle(lineWidth: 1.4, dash: [5, 4]))
+                // Bypass badge
+                if dual.isBypassed {
+                    Text("BYPASSED")
+                        .font(.app(size: 10, weight: .heavy, design: .rounded))
+                        .foregroundStyle(theme.danger.opacity(0.85))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(Capsule().fill(theme.danger.opacity(0.12)))
+                        .position(x: plot.midX, y: plot.minY + 10)
                 }
-                if !dual.isBypassed && !dual.fineTune.isBypassed && !dual.fineTune.isFlat {
-                    path(finePoints, plot: plot)
-                        .stroke(theme.fineTint.opacity(0.7), style: StrokeStyle(lineWidth: 1.4, dash: [2, 3]))
-                }
+            }
+        }
+        .frame(height: 172)
+        .accessibilityLabel(accessibilitySummary)
+        .onAppear { updatePoints(force: true) }
+        .onChange(of: dual) { _, newValue in
+            scheduleUpdatePoints(for: newValue)
+        }
+        .onDisappear { graphUpdateTask?.cancel() }
+    }
 
-                path(combinedPoints, plot: plot, fill: true)
+    // MARK: - Chassis
+
+    private var chassis: some View {
+        RoundedRectangle(cornerRadius: 16, style: .continuous)
+            .fill(theme.isDark ? Color(white: 0.06) : Color.white.opacity(0.55))
+            .overlay {
+                // Subtle top sheen (static gradient — not live Material thrash)
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
                     .fill(
                         LinearGradient(
-                            colors: [theme.accent.opacity(0.28), theme.accent.opacity(0.02)],
+                            colors: [
+                                Color.white.opacity(theme.isDark ? 0.06 : 0.35),
+                                Color.clear
+                            ],
                             startPoint: .top,
-                            endPoint: .bottom
+                            endPoint: .center
                         )
                     )
-                path(combinedPoints, plot: plot)
-                    .stroke(
-                        LinearGradient(colors: [theme.accent, theme.accentSecondary], startPoint: .leading, endPoint: .trailing),
-                        style: StrokeStyle(lineWidth: 2.4, lineCap: .round, lineJoin: .round)
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .strokeBorder(
+                        LinearGradient(
+                            colors: [
+                                Color.white.opacity(theme.isDark ? 0.14 : 0.55),
+                                theme.accent.opacity(theme.isDark ? 0.12 : 0.18),
+                                Color.white.opacity(theme.isDark ? 0.04 : 0.12)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        lineWidth: 0.75
                     )
+            }
+    }
 
-                // Axis labels
-                ForEach(yTicks, id: \.self) { g in
-                    let t = (g - yRange.lowerBound) / (yRange.upperBound - yRange.lowerBound)
-                    let y = plot.maxY - t * plot.height
-                    Text(g > 0 ? "+\(Int(g))" : "\(Int(g))")
-                        .font(.app(size: 9, weight: .medium, design: .rounded))
-                        .foregroundStyle(theme.tertiaryText)
-                        .position(x: 16, y: y)
+    // MARK: - Grid
+
+    private func drawGrid(ctx: GraphicsContext, plot: CGRect) {
+        // Vertical (frequency) — very faint
+        for f in xTicks {
+            let x = plot.minX + FrequencyResponse.xPosition(f) * plot.width
+            var p = Path()
+            p.move(to: CGPoint(x: x, y: plot.minY))
+            p.addLine(to: CGPoint(x: x, y: plot.maxY))
+            ctx.stroke(p, with: .color(Color.white.opacity(theme.isDark ? 0.045 : 0.07)), lineWidth: 0.6)
+        }
+        // Horizontal (dB)
+        for g in yTicks {
+            let y = yFor(g, plot: plot)
+            var p = Path()
+            p.move(to: CGPoint(x: plot.minX, y: y))
+            p.addLine(to: CGPoint(x: plot.maxX, y: y))
+            let isZero = abs(g) < 0.01
+            ctx.stroke(
+                p,
+                with: .color(
+                    isZero
+                        ? theme.secondaryText.opacity(theme.isDark ? 0.28 : 0.32)
+                        : Color.white.opacity(theme.isDark ? 0.05 : 0.08)
+                ),
+                lineWidth: isZero ? 1.0 : 0.6
+            )
+        }
+    }
+
+    // MARK: - Curves (Canvas helpers)
+
+    private func fillUnderCurve(ctx: GraphicsContext, points: [FrequencyResponse.Point], plot: CGRect) {
+        guard let first = points.first, let last = points.last else { return }
+        var path = Path()
+        let start = point(first, plot: plot)
+        path.move(to: CGPoint(x: start.x, y: plot.maxY))
+        path.addLine(to: start)
+        for p in points.dropFirst() {
+            path.addLine(to: point(p, plot: plot))
+        }
+        let end = point(last, plot: plot)
+        path.addLine(to: CGPoint(x: end.x, y: plot.maxY))
+        path.closeSubpath()
+
+        // Cyan/teal-ish fill using accent → accentSecondary, low opacity → clear
+        let gradient = Gradient(colors: [
+            theme.accent.opacity(theme.isDark ? 0.32 : 0.26),
+            theme.accentSecondary.opacity(theme.isDark ? 0.12 : 0.10),
+            theme.accent.opacity(0.02)
+        ])
+        ctx.fill(
+            path,
+            with: .linearGradient(
+                gradient,
+                startPoint: CGPoint(x: plot.midX, y: plot.minY),
+                endPoint: CGPoint(x: plot.midX, y: plot.maxY)
+            )
+        )
+    }
+
+    private func strokeCurve(
+        ctx: GraphicsContext,
+        points: [FrequencyResponse.Point],
+        plot: CGRect,
+        color: Color?,
+        gradient: Bool = false,
+        lineWidth: CGFloat,
+        dash: [CGFloat]?
+    ) {
+        guard let first = points.first else { return }
+        var path = Path()
+        path.move(to: point(first, plot: plot))
+        for p in points.dropFirst() {
+            path.addLine(to: point(p, plot: plot))
+        }
+        let style = StrokeStyle(
+            lineWidth: lineWidth,
+            lineCap: .round,
+            lineJoin: .round,
+            dash: dash ?? []
+        )
+        if gradient {
+            let g = Gradient(colors: [theme.accent, theme.accentSecondary.opacity(0.95)])
+            ctx.stroke(
+                path,
+                with: .linearGradient(
+                    g,
+                    startPoint: CGPoint(x: plot.minX, y: plot.midY),
+                    endPoint: CGPoint(x: plot.maxX, y: plot.midY)
+                ),
+                style: style
+            )
+        } else if let color {
+            ctx.stroke(path, with: .color(color), style: style)
+        }
+    }
+
+    // MARK: - Labels
+
+    private func dBLabels(plot: CGRect) -> some View {
+        ForEach(yTicks, id: \.self) { g in
+            let y = yFor(g, plot: plot)
+            Text(g > 0 ? "+\(Int(g))" : "\(Int(g))")
+                .font(.app(size: 9, weight: .medium, design: .rounded))
+                .foregroundStyle(abs(g) < 0.01 ? theme.secondaryText : theme.tertiaryText)
+                .position(x: 16, y: y)
+        }
+    }
+
+    private func frequencyLabels(plot: CGRect) -> some View {
+        ForEach(xTicks, id: \.self) { f in
+            let x = plot.minX + FrequencyResponse.xPosition(f) * plot.width
+            Text(FrequencyResponse.formatFrequencyHz(f))
+                .font(.app(size: 8, weight: .medium, design: .rounded))
+                .foregroundStyle(theme.tertiaryText)
+                .position(x: x, y: plot.maxY + 11)
+        }
+    }
+
+    // MARK: - Peak marker
+
+    private func peakMarker(_ peak: FrequencyResponse.Peak, plot: CGRect) -> some View {
+        let pt = point(
+            FrequencyResponse.Point(frequency: peak.frequency, magnitudeDB: peak.magnitudeDB),
+            plot: plot
+        )
+        // Keep chip inside plot bounds
+        let chipW: CGFloat = 108
+        let chipX = min(max(pt.x, plot.minX + chipW / 2 + 4), plot.maxX - chipW / 2 - 4)
+        let chipY = max(pt.y - 18, plot.minY + 10)
+
+        return ZStack {
+            // Stem
+            Path { p in
+                p.move(to: CGPoint(x: pt.x, y: pt.y))
+                p.addLine(to: CGPoint(x: pt.x, y: min(pt.y + 8, plot.maxY)))
+            }
+            .stroke(theme.accent.opacity(0.45), lineWidth: 1)
+
+            // Dot
+            Circle()
+                .fill(theme.accent)
+                .frame(width: 6, height: 6)
+                .overlay(Circle().strokeBorder(Color.white.opacity(0.55), lineWidth: 0.8))
+                .position(pt)
+
+            // Callout
+            Text("\(FrequencyResponse.formatGainDB(peak.magnitudeDB))  ·  \(FrequencyResponse.formatFrequencyHz(peak.frequency)) Hz")
+                .font(.app(size: 9, weight: .bold, design: .rounded))
+                .foregroundStyle(theme.primaryText)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background {
+                    Capsule()
+                        .fill(theme.isDark ? Color.black.opacity(0.55) : Color.white.opacity(0.88))
+                        .overlay {
+                            Capsule()
+                                .strokeBorder(theme.accent.opacity(0.35), lineWidth: 0.7)
+                        }
                 }
-            }
+                .position(x: chipX, y: chipY)
         }
-        .frame(height: 160)
-        .accessibilityLabel("Equalizer frequency response graph")
-        .onAppear { updatePoints() }
-        // Debounce while dragging EQ sliders so we don't recompute 3 curves per sample.
-        .onChange(of: dual) { _ in scheduleUpdatePoints() }
+        .allowsHitTesting(false)
     }
 
-    private func scheduleUpdatePoints() {
-        graphUpdateTask?.cancel()
-        graphUpdateTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 32_000_000) // ~2 frames
-            guard !Task.isCancelled else { return }
-            updatePoints()
-        }
-    }
-
-    private func updatePoints() {
-        combinedPoints = FrequencyResponse.combined(dual: dual)
-        targetPoints = FrequencyResponse.curve(layer: dual.target)
-        finePoints = FrequencyResponse.curve(layer: dual.fineTune)
-    }
-
-    private func path(_ pts: [FrequencyResponse.Point], plot: CGRect, fill: Bool = false) -> Path {
-        Path { path in
-            guard let first = pts.first else { return }
-            let start = point(first, plot: plot)
-            if fill {
-                path.move(to: CGPoint(x: start.x, y: plot.maxY))
-                path.addLine(to: start)
-            } else {
-                path.move(to: start)
-            }
-            for p in pts.dropFirst() {
-                path.addLine(to: point(p, plot: plot))
-            }
-            if fill, let last = pts.last {
-                let end = point(last, plot: plot)
-                path.addLine(to: CGPoint(x: end.x, y: plot.maxY))
-                path.closeSubpath()
-            }
-        }
-    }
+    // MARK: - Geometry
 
     private func point(_ p: FrequencyResponse.Point, plot: CGRect) -> CGPoint {
         let x = plot.minX + FrequencyResponse.xPosition(p.frequency) * plot.width
-        let t = (p.magnitudeDB - yRange.lowerBound) / (yRange.upperBound - yRange.lowerBound)
-        let y = plot.maxY - t * plot.height
+        let y = yFor(p.magnitudeDB, plot: plot)
         return CGPoint(x: x, y: y)
+    }
+
+    private func yFor(_ db: Double, plot: CGRect) -> CGFloat {
+        let t = (db - yRange.lowerBound) / (yRange.upperBound - yRange.lowerBound)
+        let clamped = min(max(t, 0), 1)
+        return plot.maxY - clamped * plot.height
+    }
+
+    // MARK: - Updates (debounced + skip if unchanged)
+
+    private func scheduleUpdatePoints(for newDual: DualEQState) {
+        if let lastDual, lastDual == newDual { return }
+        graphUpdateTask?.cancel()
+        graphUpdateTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 36_000_000) // ~2 frames while dragging
+            guard !Task.isCancelled else { return }
+            updatePoints(force: false)
+        }
+    }
+
+    private func updatePoints(force: Bool) {
+        if !force, let lastDual, lastDual == dual { return }
+        lastDual = dual
+        let pack = FrequencyResponse.curves(dual: dual)
+        combinedPoints = pack.combined
+        targetPoints = pack.target
+        finePoints = pack.fine
+        peak = dual.isBypassed ? nil : FrequencyResponse.peak(of: pack.combined)
+    }
+
+    private var accessibilitySummary: String {
+        if dual.isBypassed { return "Equalizer frequency response, bypassed" }
+        if let peak {
+            return "Equalizer frequency response, peak \(FrequencyResponse.formatGainDB(peak.magnitudeDB)) at \(FrequencyResponse.formatFrequencyHz(peak.frequency)) hertz"
+        }
+        return "Equalizer frequency response graph"
     }
 }

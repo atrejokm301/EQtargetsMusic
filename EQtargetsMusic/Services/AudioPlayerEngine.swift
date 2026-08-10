@@ -2672,12 +2672,12 @@ extension AudioPlayerEngine {
         let thumbData = track.artworkData
         let fileURL = track.resolvedURL()
         Task { @MainActor [weak self] in
-            // ~512pt × screen scale ≈ 1000–1500px — sharp on lock screen without multi‑MB full RAW.
+            // Same max side as immersive expand so one decode fills both caches.
             let image = await ArtworkImageCache.heroImage(
                 trackID: trackID,
                 thumbData: thumbData,
                 fileURL: fileURL,
-                maxPointSide: 512
+                maxPointSide: ArtworkImageCache.playerHeroMaxPointSide
             )
             guard let self else { return }
             guard token == self.nowPlayingArtLoadToken else { return }

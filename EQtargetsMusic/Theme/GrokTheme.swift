@@ -372,10 +372,16 @@ private struct GrokNavChromeModifier<Trailing: View>: ViewModifier {
             .toolbar {
                 if showsMenu, let openMenu {
                     ToolbarItem(placement: .topBarLeading) {
-                        Button(action: openMenu) {
+                        Button {
+                            // Always invoke on main; plain icon alone was an easy miss-tap.
+                            openMenu()
+                        } label: {
                             Image(systemName: "line.3.horizontal")
                                 .font(.app(size: 17, weight: .semibold))
                                 .foregroundStyle(theme.accent)
+                                // Expand hit target beyond the glyph (~44pt).
+                                .frame(width: 44, height: 44)
+                                .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
                         .accessibilityLabel("Menu")

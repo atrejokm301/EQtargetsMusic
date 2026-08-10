@@ -168,24 +168,23 @@ struct RootTabView: View {
                 }
                 .zIndex(0)
 
-                // zIndex 10 — STABLE MiniPlayer chrome (never removed for full-player presentation).
+                // zIndex 10 — MiniPlayer docked to bottom only.
+                // Use overlay alignment so empty space does NOT intercept nav / list taps
+                // (full-screen VStack was eating hamburger hits while music played).
                 if hasCurrentPlayableTrack {
-                    VStack(spacing: 0) {
-                        Spacer(minLength: 0)
-                        MiniPlayerBar(
-                            onTapExpand: { animateExpand() },
-                            onExpandDragChanged: { translationY in
-                                handleMiniDragChanged(translationY: translationY)
-                            },
-                            onExpandDragEnded: { translationY, predictedY in
-                                handleMiniDragEnded(translationY: translationY, predictedY: predictedY)
-                            },
-                            contentFade: miniContentFade
-                        )
-                        .padding(.horizontal, MiniPlayerBar.horizontalInset)
-                        .padding(.bottom, dockTopFromBottom + miniDockGap)
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    MiniPlayerBar(
+                        onTapExpand: { animateExpand() },
+                        onExpandDragChanged: { translationY in
+                            handleMiniDragChanged(translationY: translationY)
+                        },
+                        onExpandDragEnded: { translationY, predictedY in
+                            handleMiniDragEnded(translationY: translationY, predictedY: predictedY)
+                        },
+                        contentFade: miniContentFade
+                    )
+                    .padding(.horizontal, MiniPlayerBar.horizontalInset)
+                    .padding(.bottom, dockTopFromBottom + miniDockGap)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
                     .ignoresSafeArea(edges: .bottom)
                     .opacity(hideBottomChrome ? 0 : 1)
                     .allowsHitTesting(!hideBottomChrome)

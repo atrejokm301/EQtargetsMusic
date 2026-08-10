@@ -454,6 +454,8 @@ struct EQEditorSheet: View {
                 legendDot(theme.targetTint, "Target")
 
                 Button {
+                    // Switch editing layer first so sliders match the curve you're picking.
+                    selectEditingLayer(.target)
                     showTargetPickerSheet = true
                 } label: {
                     HStack(spacing: 3) {
@@ -467,6 +469,7 @@ struct EQEditorSheet: View {
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
                     .background(Capsule().fill(theme.targetTint.opacity(0.15)))
+                    .contentShape(Capsule())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Target profile")
@@ -510,6 +513,7 @@ struct EQEditorSheet: View {
                 legendDot(theme.accent, "Fine-Tune")
 
                 Button {
+                    selectEditingLayer(.fineTune)
                     showFineTunePickerSheet = true
                 } label: {
                     HStack(spacing: 3) {
@@ -523,6 +527,7 @@ struct EQEditorSheet: View {
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
                     .background(Capsule().fill(theme.accent.opacity(0.15)))
+                    .contentShape(Capsule())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Fine-Tune profile")
@@ -584,9 +589,7 @@ struct EQEditorSheet: View {
     private func switchPillSegment(_ layer: EQLayer, title: String, subtitle: String, tint: Color) -> some View {
         let isSelected = dual.editingLayer == layer
         return Button {
-            withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
-                dual.editingLayer = layer
-            }
+            selectEditingLayer(layer)
         } label: {
             VStack(spacing: 1) {
                 Text(title)
@@ -600,18 +603,33 @@ struct EQEditorSheet: View {
                     .lineLimit(1)
             }
             .frame(maxWidth: .infinity)
-            .padding(.vertical, 5)
+            .padding(.vertical, 8)
             .background {
-                if isSelected {
-                    Capsule()
-                        .fill(tint.opacity(0.20))
-                        .overlay {
+                Capsule()
+                    .fill(isSelected ? tint.opacity(0.20) : Color.clear)
+                    .overlay {
+                        if isSelected {
                             Capsule().strokeBorder(tint.opacity(0.40), lineWidth: 0.9)
                         }
-                }
+                    }
             }
+            // Full half-width hit target (not just the text glyphs).
+            .contentShape(Capsule())
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(title)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+        .accessibilityHint("Switch EQ editor to \(title)")
+    }
+
+    /// Write whole `DualEQState` so `@Published` / `@Binding` always notice `editingLayer` changes.
+    private func selectEditingLayer(_ layer: EQLayer) {
+        guard dual.editingLayer != layer else { return }
+        var next = dual
+        next.editingLayer = layer
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
+            dual = next
+        }
     }
 
     // MARK: - Preamp

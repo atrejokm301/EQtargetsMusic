@@ -324,20 +324,84 @@ enum AutoEQParser {
 // MARK: - Frequency response (graph)
 
 enum FrequencyResponse {
-    /// 96 log points is enough for a 160pt-tall graph; half the CPU of 200.
+    /// Keep ≤128 for battery — 96 is enough for a ~160–180pt-tall plot.
     static let pointCount = 96
     static let sampleRate: Double = 48_000
+    /// Shared log axis so all curves share one frequency grid.
+    private static let axisFrequencies: [Double] = logSpace(20, 20_000, pointCount)
 
-    struct Point: Identifiable {
+    struct Point: Identifiable, Equatable {
         var id: Double { frequency }
         let frequency: Double
         let magnitudeDB: Double
     }
 
+    /// Peak of a curve (max |mag| prefers boost; ties → higher magnitude).
+    struct Peak: Equatable {
+        let frequency: Double
+        let magnitudeDB: Double
+    }
+
     static func curve(layer: EQLayerState) -> [Point] {
-        let freqs = logSpace(20, 20_000, pointCount)
+        samples(for: layer, frequencies: axisFrequencies)
+    }
+
+    static func combined(dual: DualEQState) -> [Point] {
+        let pack = curves(dual: dual)
+        return pack.combined
+    }
+
+    /// One-pass Target + Fine + Combined (shared frequency grid, no triple logSpace).
+    static func curves(dual: DualEQState) -> (combined: [Point], target: [Point], fine: [Point]) {
+        let freqs = axisFrequencies
+        if dual.isBypassed {
+            let z = freqs.map { Point(frequency: $0, magnitudeDB: 0) }
+            return (z, z, z)
+        }
+        let t = samples(for: dual.target, frequencies: freqs)
+        let f = samples(for: dual.fineTune, frequencies: freqs)
+        let c = zip(t, f).map { a, b in
+            Point(frequency: a.frequency, magnitudeDB: a.magnitudeDB + b.magnitudeDB)
+        }
+        return (c, t, f)
+    }
+
+    static func peak(of points: [Point]) -> Peak? {
+        guard !points.isEmpty else { return nil }
+        // Prefer the highest boost; if all cuts, show the least negative (closest to 0 peak for display of max magnitude boost)
+        var best = points[0]
+        for p in points.dropFirst() {
+            if p.magnitudeDB > best.magnitudeDB { best = p }
+        }
+        // Flat line — no marker
+        if abs(best.magnitudeDB) < 0.05 { return nil }
+        return Peak(frequency: best.frequency, magnitudeDB: best.magnitudeDB)
+    }
+
+    static func xPosition(_ frequency: Double) -> Double {
+        let f = min(max(frequency, 20), 20_000)
+        return (log10(f) - log10(20)) / (log10(20_000) - log10(20))
+    }
+
+    static func formatFrequencyHz(_ f: Double) -> String {
+        if f >= 1000 {
+            let k = f / 1000
+            if abs(k - k.rounded()) < 0.05 { return "\(Int(k.rounded()))k" }
+            return String(format: "%.1fk", k)
+        }
+        if f >= 100 { return "\(Int(f.rounded()))" }
+        return String(format: "%.0f", f)
+    }
+
+    static func formatGainDB(_ g: Double) -> String {
+        String(format: "%+.1f dB", g)
+    }
+
+    // MARK: - Private
+
+    private static func samples(for layer: EQLayerState, frequencies: [Double]) -> [Point] {
         if layer.isBypassed {
-            return freqs.map { Point(frequency: $0, magnitudeDB: 0) }
+            return frequencies.map { Point(frequency: $0, magnitudeDB: 0) }
         }
         let filters = layer.bands.filter(\.isEnabled).map {
             EQBiquad(
@@ -347,33 +411,16 @@ enum FrequencyResponse {
                 q: $0.q
             )
         }
-        return freqs.map { f in
+        return frequencies.map { f in
             var m = layer.preamp
             for filter in filters { m += filter.magnitudeDB(at: f) }
             return Point(frequency: f, magnitudeDB: m)
         }
     }
 
-    static func combined(dual: DualEQState) -> [Point] {
-        let freqs = logSpace(20, 20_000, pointCount)
-        if dual.isBypassed {
-            return freqs.map { Point(frequency: $0, magnitudeDB: 0) }
-        }
-        let t = curve(layer: dual.target)
-        let f = curve(layer: dual.fineTune)
-        return zip(t, f).map { a, b in
-            Point(frequency: a.frequency, magnitudeDB: a.magnitudeDB + b.magnitudeDB)
-        }
-    }
-
-    static func xPosition(_ frequency: Double) -> Double {
-        let f = min(max(frequency, 20), 20_000)
-        return (log10(f) - log10(20)) / (log10(20_000) - log10(20))
-    }
-
     private static func logSpace(_ minF: Double, _ maxF: Double, _ count: Int) -> [Double] {
         let a = log10(minF), b = log10(maxF)
-        let step = (b - a) / Double(count - 1)
+        let step = (b - a) / Double(max(count - 1, 1))
         return (0 ..< count).map { pow(10, a + Double($0) * step) }
     }
 }

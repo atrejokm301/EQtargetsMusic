@@ -91,13 +91,87 @@ final class LibraryStore: ObservableObject {
         }
         // Catalog present (even 0 tracks after load) → never auto-rescan on every launch.
         guard isCatalogReady else { return }
-        guard tracks.isEmpty else {
-            startAutoBPMIfNeeded()
+        if tracks.isEmpty {
+            // Empty catalog file or first install — one folder scan only when Music dir may have files.
+            await rescan()
+        } else {
+            // Repair disc/track order for existing libraries (nil tags → alphabetical albums).
+            await repairAlbumTrackOrderMetadata()
+        }
+        startAutoBPMIfNeeded()
+    }
+
+    /// Re-read track/disc numbers (tags + filename) for tracks that lack order metadata.
+    /// Preserves IDs, BPM, artwork. Rebuilds album groups so live albums play in order.
+    func repairAlbumTrackOrderMetadata() async {
+        guard !tracks.isEmpty else { return }
+        let missing = tracks.filter { $0.trackNumber == nil || ($0.trackNumber ?? 0) <= 0 }.count
+        // Always run a light pass when any multi-track album could be unordered.
+        let multiAlbumNeedsFix = albumGroups.contains { alb in
+            alb.tracks.count >= 2 && alb.tracks.contains { ($0.trackNumber ?? 0) <= 0 }
+        }
+        guard missing > 0 || multiAlbumNeedsFix else {
+            // Still re-sort groups in case inferred filename order improved comparator only.
+            rebuildGroups()
             return
         }
-        // Empty catalog file or first install — one folder scan only when Music dir may have files.
-        await rescan()
-        startAutoBPMIfNeeded()
+
+        statusMessage = "Fixing album track order…"
+        var next = tracks
+        var changed = 0
+        for i in next.indices {
+            if i % 30 == 0 { await Task.yield() }
+            guard let url = next[i].resolvedURL() else {
+                // Filename-only inference from relativePath / title
+                let tn = next[i].trackNumber ?? Self.inferredTrackNumber(for: next[i])
+                let dn = next[i].discNumber ?? Self.inferredDiscNumber(for: next[i])
+                if tn != next[i].trackNumber || dn != next[i].discNumber {
+                    next[i].trackNumber = tn
+                    next[i].discNumber = dn
+                    changed += 1
+                }
+                continue
+            }
+            let asset = AVURLAsset(url: url)
+            let pair = await Self.loadTrackAndDiscFromIdentifiers(asset: asset)
+            var tn = pair.track
+            var dn = pair.disc
+            if tn == nil || dn == nil {
+                // Heuristic scan
+                if let meta = try? await asset.load(.metadata) {
+                    for item in meta {
+                        let idRaw = item.identifier?.rawValue.lowercased() ?? ""
+                        let keyRaw = (item.key as? NSString as String?)?.lowercased()
+                            ?? (item.key as? String)?.lowercased()
+                            ?? ""
+                        let blob = idRaw + " " + keyRaw
+                        if tn == nil, Self.looksLikeTrackNumberKey(blob) {
+                            tn = await Self.intMetadata(item)
+                        } else if dn == nil, Self.looksLikeDiscNumberKey(blob) {
+                            dn = await Self.intMetadata(item)
+                        }
+                    }
+                }
+            }
+            if tn == nil { tn = Self.trackNumberFromFilename(url.lastPathComponent) }
+            if dn == nil { dn = Self.discNumberFromFilename(url.lastPathComponent) }
+            // Prefer newly found values; keep old only if new is nil
+            let newTn = tn ?? next[i].trackNumber
+            let newDn = dn ?? next[i].discNumber
+            if newTn != next[i].trackNumber || newDn != next[i].discNumber {
+                next[i].trackNumber = newTn
+                next[i].discNumber = newDn
+                changed += 1
+            }
+        }
+        if changed > 0 {
+            tracks = next // rebuildGroups via didSet
+            saveCatalog()
+            statusMessage = "\(tracks.count) tracks · album order updated (\(changed))"
+        } else {
+            rebuildGroups() // re-apply improved sort even without tag writes
+            statusMessage = "\(tracks.count) track\(tracks.count == 1 ? "" : "s")"
+        }
     }
 
     /// Quiet background BPM for unchecked tracks only (no UI chrome).
@@ -219,7 +293,8 @@ final class LibraryStore: ObservableObject {
 
             return ArtistGroup(
                 name: first.artist.trimmingCharacters(in: .whitespacesAndNewlines),
-                tracks: list,
+                // Keep album-order within each disc-group for artist-wide playlists too.
+                tracks: Self.sortTracks(list),
                 albums: albumsForArtist
             )
         }
@@ -244,16 +319,88 @@ final class LibraryStore: ObservableObject {
         .sorted(by: Self.albumSort)
     }
 
+    /// Album / disc order: disc → track tag → leading filename number → natural title.
+    /// Never pure A–Z by title when order metadata exists (live albums must stay sequential).
     private static func sortTracks(_ list: [Track]) -> [Track] {
         list.sorted { a, b in
-            let discA = a.discNumber ?? 1
-            let discB = b.discNumber ?? 1
-            if discA != discB { return discA < discB }
-            let trkA = a.trackNumber ?? 999
-            let trkB = b.trackNumber ?? 999
-            if trkA != trkB { return trkA < trkB }
-            return a.title.localizedCaseInsensitiveCompare(b.title) == .orderedAscending
+            albumPlaybackOrder(a, b)
         }
+    }
+
+    /// Shared comparator for album playback & UI lists.
+    static func albumPlaybackOrder(_ a: Track, _ b: Track) -> Bool {
+        let discA = a.discNumber ?? inferredDiscNumber(for: a) ?? 1
+        let discB = b.discNumber ?? inferredDiscNumber(for: b) ?? 1
+        if discA != discB { return discA < discB }
+
+        let trkA = a.trackNumber ?? inferredTrackNumber(for: a)
+        let trkB = b.trackNumber ?? inferredTrackNumber(for: b)
+        switch (trkA, trkB) {
+        case let (ta?, tb?) where ta != tb:
+            return ta < tb
+        case (_?, nil):
+            return true // tagged/inferred before unknown
+        case (nil, _?):
+            return false
+        default:
+            break
+        }
+
+        // Filename natural order (handles 1, 2, 10 correctly) then title.
+        let pathA = a.relativePath ?? a.title
+        let pathB = b.relativePath ?? b.title
+        let byPath = pathA.compare(pathB, options: [.numeric, .caseInsensitive])
+        if byPath != .orderedSame { return byPath == .orderedAscending }
+        return a.title.compare(b.title, options: [.numeric, .caseInsensitive]) == .orderedAscending
+    }
+
+    /// Best-effort track index from filename when tags are missing.
+    static func inferredTrackNumber(for track: Track) -> Int? {
+        if let n = track.trackNumber, n > 0 { return n }
+        if let rel = track.relativePath {
+            return trackNumberFromFilename(URL(fileURLWithPath: rel).lastPathComponent)
+        }
+        return trackNumberFromFilename(track.title)
+    }
+
+    static func inferredDiscNumber(for track: Track) -> Int? {
+        if let n = track.discNumber, n > 0 { return n }
+        if let rel = track.relativePath {
+            return discNumberFromFilename(URL(fileURLWithPath: rel).lastPathComponent)
+        }
+        return discNumberFromFilename(track.title)
+    }
+
+    /// `01 Intro`, `1-Song`, `Track 03`, `Disc2 - 04 - Live`
+    static func trackNumberFromFilename(_ name: String) -> Int? {
+        let base = (name as NSString).deletingPathExtension
+        // Avoid Swift regex literals with fancy dashes (they break the lexer).
+        let patterns = [
+            #"^(?:.*[\s_\-])?(\d{1,3})[\s_\-\.]+.+"#,  // "… 01 - Title" / "01-Title"
+            #"^(\d{1,3})(?:[\s.\-_].*)?$"#,             // leading number
+            #"(?i)(?:track|tr|pista)\s*0*(\d{1,3})(?:\D|$)"#
+        ]
+        for pat in patterns {
+            guard let re = try? NSRegularExpression(pattern: pat) else { continue }
+            let range = NSRange(base.startIndex..<base.endIndex, in: base)
+            guard let m = re.firstMatch(in: base, range: range), m.numberOfRanges > 1,
+                  let r = Range(m.range(at: 1), in: base),
+                  let n = Int(base[r]), (1 ... 999).contains(n) else { continue }
+            return n
+        }
+        return nil
+    }
+
+    static func discNumberFromFilename(_ name: String) -> Int? {
+        let base = (name as NSString).deletingPathExtension
+        guard let re = try? NSRegularExpression(pattern: #"(?i)(?:disc|disk|cd|disco)\s*0*(\d{1,2})(?:\D|$)"#) else {
+            return nil
+        }
+        let range = NSRange(base.startIndex..<base.endIndex, in: base)
+        guard let m = re.firstMatch(in: base, range: range), m.numberOfRanges > 1,
+              let r = Range(m.range(at: 1), in: base),
+              let n = Int(base[r]), (1 ... 99).contains(n) else { return nil }
+        return n
     }
 
     private static func albumSort(_ a: AlbumGroup, _ b: AlbumGroup) -> Bool {
@@ -675,7 +822,12 @@ final class LibraryStore: ObservableObject {
 
         var bpmVal: Double?
 
-        // Track / disc / BPM from full metadata set (ID3 TBPM, iTunes, QuickTime, etc.)
+        // 1) Explicit track/disc identifiers (TRCK / TRKN / TPOS) — most reliable.
+        let idPair = await Self.loadTrackAndDiscFromIdentifiers(asset: asset)
+        trackNum = idPair.track
+        discNum = idPair.disc
+
+        // 2) Heuristic key scan for formats without standard identifiers.
         do {
             let meta = try await asset.load(.metadata)
             for item in meta {
@@ -696,7 +848,15 @@ final class LibraryStore: ObservableObject {
             }
         } catch { }
 
-        // Explicit identifier pass (more reliable than string matching alone).
+        // 3) Filename fallback — critical for live albums with weak tags.
+        if trackNum == nil {
+            trackNum = Self.trackNumberFromFilename(url.lastPathComponent)
+        }
+        if discNum == nil {
+            discNum = Self.discNumberFromFilename(url.lastPathComponent)
+        }
+
+        // Explicit BPM identifier pass.
         if bpmVal == nil {
             bpmVal = await Self.loadBPM(from: asset)
         }
@@ -789,38 +949,99 @@ final class LibraryStore: ObservableObject {
     }
 
     private static func looksLikeTrackNumberKey(_ blob: String) -> Bool {
-        (blob.contains("track") && (blob.contains("number") || blob.contains("num") || blob.hasSuffix("trkn")))
+        // Avoid matching "soundtrack" alone — require number/trck/trkn forms.
+        if blob.contains("soundtrack") && !blob.contains("tracknumber") && !blob.contains("trck") {
+            return false
+        }
+        return blob.contains("trck")
             || blob.contains("trkn")
             || blob.contains("tracknumber")
+            || blob.contains("track number")
+            || blob.contains("track_number")
+            || (blob.contains("track") && (blob.contains("number") || blob.contains("num")))
+            || blob.hasSuffix(".track")
     }
 
     private static func looksLikeDiscNumberKey(_ blob: String) -> Bool {
         (blob.contains("disc") && (blob.contains("number") || blob.contains("num") || blob.hasSuffix("disk")))
             || blob.contains("disknumber")
             || blob.contains("discnumber")
+            || blob.contains("disc number")
             || blob.contains("tpos")
+            || blob.contains("disk number")
     }
 
     private static func intMetadata(_ item: AVMetadataItem) async -> Int? {
         if let n = try? await item.load(.numberValue) {
-            return n.intValue
+            let v = n.intValue
+            if v > 0, v < 10_000 { return v }
         }
         if let s = try? await item.load(.stringValue) {
-            let head = s.split(whereSeparator: { $0 == "/" || $0 == " " || $0 == "\t" }).first.map(String.init) ?? s
-            if let v = Int(head.trimmingCharacters(in: .whitespacesAndNewlines)) { return v }
-        }
-        if let data = try? await item.load(.dataValue), data.count >= 2 {
-            // iTunes-style binary track pairs sometimes appear as data
-            let bytes = [UInt8](data)
-            if bytes.count >= 8 {
-                // common QuickTime track number layout: 4 zero bytes + 2-byte track + 2-byte total
-                let hi = Int(bytes[bytes.count - 4])
-                let lo = Int(bytes[bytes.count - 3])
-                let n = (hi << 8) | lo
-                if n > 0, n < 10_000 { return n }
+            // ID3 often stores "3/12" or "03"
+            let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
+            let head = trimmed.split(whereSeparator: { $0 == "/" || $0 == " " || $0 == "\t" || $0 == ";" })
+                .first.map(String.init) ?? trimmed
+            if let v = Int(head), v > 0, v < 10_000 { return v }
+            // "Track 03"
+            if let re = try? NSRegularExpression(pattern: #"(\d{1,4})"#),
+               let m = re.firstMatch(in: head, range: NSRange(head.startIndex..<head.endIndex, in: head)),
+               let r = Range(m.range(at: 1), in: head),
+               let v = Int(head[r]), v > 0 {
+                return v
             }
         }
+        if let data = try? await item.load(.dataValue), !data.isEmpty {
+            let bytes = [UInt8](data)
+            // iTunes / QuickTime: often 8 bytes with track in last 4 (big-endian u16 + total u16)
+            if bytes.count >= 4 {
+                let n16 = (Int(bytes[bytes.count - 4]) << 8) | Int(bytes[bytes.count - 3])
+                if n16 > 0, n16 < 10_000 { return n16 }
+            }
+            if bytes.count >= 2 {
+                let n16 = (Int(bytes[0]) << 8) | Int(bytes[1])
+                if n16 > 0, n16 < 10_000 { return n16 }
+            }
+            // Single-byte track
+            if bytes.count == 1, bytes[0] > 0 { return Int(bytes[0]) }
+        }
         return nil
+    }
+
+    /// Explicit identifier pass — more reliable than free-text key matching for TRCK/TPOS.
+    private static func loadTrackAndDiscFromIdentifiers(asset: AVURLAsset) async -> (track: Int?, disc: Int?) {
+        let all = (try? await asset.load(.metadata)) ?? []
+        var trackNum: Int?
+        var discNum: Int?
+
+        let trackIDs: [AVMetadataIdentifier] = [
+            .id3MetadataTrackNumber,
+            .iTunesMetadataTrackNumber,
+            .quickTimeUserDataTrack
+        ]
+        for id in trackIDs where trackNum == nil {
+            let items = AVMetadataItem.metadataItems(from: all, filteredByIdentifier: id)
+            for item in items {
+                if let v = await intMetadata(item) {
+                    trackNum = v
+                    break
+                }
+            }
+        }
+
+        let discIDs: [AVMetadataIdentifier] = [
+            .id3MetadataPartOfASet,
+            .iTunesMetadataDiscNumber
+        ]
+        for id in discIDs where discNum == nil {
+            let items = AVMetadataItem.metadataItems(from: all, filteredByIdentifier: id)
+            for item in items {
+                if let v = await intMetadata(item) {
+                    discNum = v
+                    break
+                }
+            }
+        }
+        return (trackNum, discNum)
     }
 
     private static func bpmMetadata(_ item: AVMetadataItem) async -> Double? {
