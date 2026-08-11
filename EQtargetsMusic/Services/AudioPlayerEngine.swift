@@ -60,9 +60,9 @@ final class PlaybackDeck {
     let player = AVAudioPlayerNode()
     let targetEQ: AVAudioUnitEQ
     let fineEQ: AVAudioUnitEQ
-    /// Post-PEQ bass stage (Wavelet-style). 4 bands: shelf + peaking helpers.
+    /// Post-PEQ bass stage. 4 bands: shelf + peaking helpers.
     let bassEQ: AVAudioUnitEQ
-    /// Post-Bass dynamics (Wavelet-style limiter). Apple AUDynamicsProcessor.
+    /// Post-Bass dynamics (limiter). Apple AUDynamicsProcessor.
     let limiter: AVAudioUnitEffect
     let mixer = AVAudioMixerNode()
 

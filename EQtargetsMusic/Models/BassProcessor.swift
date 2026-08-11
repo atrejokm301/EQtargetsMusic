@@ -2,7 +2,7 @@
 //  BassProcessor.swift
 //  EQtargetsMusic
 //
-//  Independent Bass Style stage (Wavelet-inspired).
+//  Independent Bass Style stage.
 //  NEVER mutates Target / Fine-Tune DualEQState.
 //
 //  Chain position:
@@ -62,7 +62,7 @@ enum BassStyle: String, CaseIterable, Identifiable, Codable {
 
     var systemImage: String {
         switch self {
-        case .none: return "speaker.slash"
+        case .none: return "hifispeaker.slash"
         case .transientPunch: return "waveform.path"
         case .sustainRumble: return "water.waves"
         case .naturalClean: return "leaf"
@@ -195,7 +195,7 @@ enum BassProcessorDSP {
             return idle
 
         case .transientPunch:
-            // Wavelet-ish “punch”: less deep sub, tighter peak around kick attack.
+            // Punch: less deep sub, tighter peak around kick attack.
             // Low shelf kept modest so the hit stays controlled.
             let shelfG = 1.6 * str
             let punchG = 6.0 * str

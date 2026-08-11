@@ -2,9 +2,9 @@
 //  EQControlsView.swift
 //  EQtargetsMusic
 //
-//  Now Playing: EQGraphView stays here + entry to the frosted EQ editor sheet.
-//  Detailed controls (profiles, segment, preamp, 10 vertical bands) live in EQEditorSheet.
-//  Dual EQ chain: Target → Fine-Tune. Bass Processor is a separate post stage (Wavelet-style).
+//  Now Playing: EQGraphView stays here + entry tiles for frosted editor sheets.
+//  Detailed controls live in EQEditorSheet / BassStyleEditorSheet / LimiterEditorSheet.
+//  Dual EQ chain: Target → Fine-Tune. Bass and Limiter are separate post stages.
 //
 
 import SwiftUI
@@ -24,6 +24,7 @@ struct EQControlsView: View {
     @EnvironmentObject private var presetStore: EQPresetStore
 
     @State private var showEQEditor = false
+    @State private var showBassSheet = false
     @State private var showLimiterSheet = false
 
     var body: some View {
@@ -47,38 +48,38 @@ struct EQControlsView: View {
             // Graph shows Target + Fine-Tune only (Bass / Limiter are post-PEQ).
             EQGraphView(dual: dual)
 
-            Button {
+            // Shared tile style: icon + title + subtitle + chevron.up on glassCard
+            effectEntryTile(
+                icon: "slider.vertical.3",
+                iconTint: theme.accent,
+                title: "EQ Controls",
+                subtitle: "Profiles, preamp & 10 bands",
+                accessibilityLabel: "Open EQ controls",
+                accessibilityHint: "Opens Target and Fine-Tune band editor"
+            ) {
                 showEQEditor = true
-            } label: {
-                HStack(spacing: 10) {
-                    Image(systemName: "slider.vertical.3")
-                        .font(.app(size: 16, weight: .semibold))
-                        .foregroundStyle(theme.accent)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("EQ Controls")
-                            .font(.app(size: 15, weight: .bold, design: .rounded))
-                            .foregroundStyle(theme.primaryText)
-                        Text("Profiles, preamp & 10 bands")
-                            .font(.app(size: 12, weight: .medium, design: .rounded))
-                            .foregroundStyle(theme.secondaryText)
-                    }
-                    Spacer(minLength: 0)
-                    Image(systemName: "chevron.up")
-                        .font(.app(size: 12, weight: .bold))
-                        .foregroundStyle(theme.tertiaryText)
-                }
-                .padding(14)
-                .glassCard(corner: 16)
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Open EQ controls")
-            .accessibilityHint("Opens Target and Fine-Tune band editor")
 
-            // Independent Bass stage — never writes into Target / Fine-Tune.
-            BassStyleControlsView(bass: $bass)
+            effectEntryTile(
+                icon: "hifispeaker.fill",
+                iconTint: theme.accentSecondary,
+                title: "Bass Style",
+                subtitle: bassTileSubtitle,
+                accessibilityLabel: "Open Bass Style",
+                accessibilityHint: "Opens bass processor settings"
+            ) {
+                showBassSheet = true
+            }
 
-            // Post-Bass limiter tile → bottom sheet (Wavelet-style dynamics).
-            LimiterEntryTile(limiter: limiter) {
+            effectEntryTile(
+                icon: "waveform.badge.minus",
+                iconTint: theme.fineTint,
+                title: "Limiter",
+                subtitle: limiter.isEnabled ? limiter.summaryLabel : "Threshold, ratio & post-gain",
+                accessibilityLabel: "Open Limiter",
+                accessibilityHint: "Opens limiter settings",
+                accessibilityValue: limiter.summaryLabel
+            ) {
                 showLimiterSheet = true
             }
         }
@@ -96,12 +97,59 @@ struct EQControlsView: View {
             .environmentObject(presetStore)
             .environment(\.grokTheme, theme)
         }
+        .sheet(isPresented: $showBassSheet) {
+            BassStyleEditorSheet(bass: $bass)
+                .environment(\.grokTheme, theme)
+        }
         .sheet(isPresented: $showLimiterSheet) {
             LimiterEditorSheet(limiter: $limiter)
                 .environment(\.grokTheme, theme)
-                .presentationDetents([.medium, .large])
-                .presentationDragIndicator(.visible)
         }
+    }
+
+    private var bassTileSubtitle: String {
+        guard bass.style != .none else { return "Styles, strength & post gain" }
+        let pct = Int((bass.strength * 100).rounded())
+        return "\(bass.style.title) · \(pct)%"
+    }
+
+    private func effectEntryTile(
+        icon: String,
+        iconTint: Color,
+        title: String,
+        subtitle: String,
+        accessibilityLabel: String,
+        accessibilityHint: String,
+        accessibilityValue: String? = nil,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                Image(systemName: icon)
+                    .font(.app(size: 16, weight: .semibold))
+                    .foregroundStyle(iconTint)
+                    .frame(width: 22, alignment: .center)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.app(size: 15, weight: .bold, design: .rounded))
+                        .foregroundStyle(theme.primaryText)
+                    Text(subtitle)
+                        .font(.app(size: 12, weight: .medium, design: .rounded))
+                        .foregroundStyle(theme.secondaryText)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.up")
+                    .font(.app(size: 12, weight: .bold))
+                    .foregroundStyle(theme.tertiaryText)
+            }
+            .padding(14)
+            .glassCard(corner: 16)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(accessibilityLabel)
+        .accessibilityHint(accessibilityHint)
+        .accessibilityValue(accessibilityValue ?? "")
     }
 
     private func legendDot(_ color: Color, _ title: String) -> some View {
@@ -115,196 +163,168 @@ struct EQControlsView: View {
     }
 }
 
-// MARK: - Bass Style (post-PEQ effect — separate from Fine-Tune)
+// MARK: - Bass Style editor sheet (same chrome as EQ Controls)
 
-/// Controls for the independent Bass Processor.
-/// Binds only `BassProcessorState` — never touches DualEQState / Target / Fine-Tune.
-struct BassStyleControlsView: View {
+/// Full bass processor UI in a frosted bottom sheet — never touches DualEQ.
+struct BassStyleEditorSheet: View {
     @Binding var bass: BassProcessorState
     @Environment(\.grokTheme) private var theme
+    @Environment(\.dismiss) private var dismiss
 
-    /// Distinct accent so Bass reads as an *effect*, not another EQ layer.
     private var bassTint: Color { theme.accentSecondary }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            // Header — clear hierarchy: effect name + “after PEQ” badge
-            HStack(alignment: .top, spacing: 10) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .fill(bassTint.opacity(theme.isDark ? 0.18 : 0.12))
-                        .frame(width: 40, height: 40)
-                    Image(systemName: "speaker.wave.2.bubble.left.fill")
-                        .font(.app(size: 16, weight: .semibold))
-                        .foregroundStyle(bassTint)
-                }
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack(spacing: 6) {
-                        Text("Bass Style")
-                            .font(.app(size: 16, weight: .bold, design: .rounded))
-                            .foregroundStyle(theme.primaryText)
-                        Text("EFFECT")
-                            .font(.app(size: 9, weight: .heavy, design: .rounded))
-                            .foregroundStyle(bassTint)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Capsule().fill(bassTint.opacity(0.16)))
-                    }
-                    Text("Runs after Target + Fine-Tune · never edits AutoEQ")
-                        .font(.app(size: 11, weight: .medium, design: .rounded))
-                        .foregroundStyle(theme.secondaryText)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                Spacer(minLength: 0)
-            }
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 10) {
+                    // Style chips
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Style")
+                            .font(.app(size: 12, weight: .semibold, design: .rounded))
+                            .foregroundStyle(theme.secondaryText)
 
-            // Style chips — one row; None = icon only; snaps recommended Hz
-            HStack(spacing: 6) {
-                ForEach(BassStyle.allCases) { style in
-                    let selected = bass.style == style
-                    Button {
-                        var next = bass
-                        next.selectStyle(style, applyRecommendedCutoff: true)
-                        bass = next
-                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                    } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: style.systemImage)
-                                .font(.app(size: 11, weight: .semibold))
-                            if !style.compactTitle.isEmpty {
-                                Text(style.compactTitle)
-                                    .font(.app(size: 11, weight: .semibold, design: .rounded))
-                                    .lineLimit(1)
-                                    .minimumScaleFactor(0.85)
+                        HStack(spacing: 6) {
+                            ForEach(BassStyle.allCases) { style in
+                                let selected = bass.style == style
+                                Button {
+                                    var next = bass
+                                    next.selectStyle(style, applyRecommendedCutoff: true)
+                                    bass = next
+                                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                                } label: {
+                                    HStack(spacing: 4) {
+                                        Image(systemName: style.systemImage)
+                                            .font(.app(size: 11, weight: .semibold))
+                                        if !style.compactTitle.isEmpty {
+                                            Text(style.compactTitle)
+                                                .font(.app(size: 11, weight: .semibold, design: .rounded))
+                                                .lineLimit(1)
+                                                .minimumScaleFactor(0.85)
+                                        }
+                                    }
+                                    .frame(maxWidth: .infinity)
+                                    .foregroundStyle(selected ? theme.background : theme.primaryText)
+                                    .padding(.horizontal, style == .none ? 8 : 6)
+                                    .padding(.vertical, 10)
+                                    .background(
+                                        Capsule()
+                                            .fill(selected ? bassTint : theme.elevated)
+                                    )
+                                    .overlay(
+                                        Capsule()
+                                            .strokeBorder(
+                                                selected ? Color.clear : theme.primaryText.opacity(0.08),
+                                                lineWidth: 1
+                                            )
+                                    )
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel(style.title)
+                                .accessibilityAddTraits(selected ? .isSelected : [])
                             }
                         }
-                        .frame(maxWidth: .infinity)
-                        .foregroundStyle(selected ? theme.background : theme.primaryText)
-                        .padding(.horizontal, style == .none ? 8 : 6)
-                        .padding(.vertical, 8)
-                        .background(
-                            Capsule()
-                                .fill(selected ? bassTint : theme.elevated)
-                        )
-                        .overlay(
-                            Capsule()
-                                .strokeBorder(
-                                    selected ? Color.clear : theme.primaryText.opacity(0.08),
-                                    lineWidth: 1
-                                )
-                        )
+
+                        if bass.style != .none {
+                            Text(bass.style.subtitle)
+                                .font(.app(size: 12, weight: .medium, design: .rounded))
+                                .foregroundStyle(theme.secondaryText)
+                        }
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(style.title)
-                    .accessibilityAddTraits(selected ? .isSelected : [])
-                }
-            }
+                    .padding(14)
+                    .glassCard(corner: 16)
 
-            if bass.style != .none {
-                // Active style readout
-                HStack(spacing: 6) {
-                    Image(systemName: "checkmark.circle.fill")
-                        .font(.app(size: 12, weight: .semibold))
-                        .foregroundStyle(bassTint)
-                    Text(bass.style.title)
-                        .font(.app(size: 12, weight: .bold, design: .rounded))
-                        .foregroundStyle(theme.primaryText)
-                    Text("·")
+                    if bass.style != .none {
+                        VStack(spacing: 14) {
+                            bassSlider(
+                                title: "Strength",
+                                value: Binding(
+                                    get: { bass.strength },
+                                    set: { v in
+                                        var n = bass
+                                        n.strength = v
+                                        n.sanitize()
+                                        bass = n
+                                    }
+                                ),
+                                range: BassProcessorState.strengthRange,
+                                format: { String(format: "%.0f%%", $0 * 100) }
+                            )
+                            bassSlider(
+                                title: bass.cutoffMatchesStyleRecommendation
+                                    ? "Cutoff · recommended"
+                                    : "Cutoff",
+                                value: Binding(
+                                    get: { bass.cutoff },
+                                    set: { v in
+                                        var n = bass
+                                        n.cutoff = v
+                                        n.sanitize()
+                                        bass = n
+                                    }
+                                ),
+                                range: BassProcessorState.cutoffRange,
+                                format: { String(format: "%.0f Hz", $0) }
+                            )
+                            bassSlider(
+                                title: "Post gain",
+                                value: Binding(
+                                    get: { bass.postGain },
+                                    set: { v in
+                                        var n = bass
+                                        n.postGain = v
+                                        n.sanitize()
+                                        bass = n
+                                    }
+                                ),
+                                range: BassProcessorState.postGainRange,
+                                format: { String(format: "%+.1f dB", $0) }
+                            )
+                        }
+                        .padding(14)
+                        .glassCard(corner: 16)
+                    }
+
+                    Text("Runs after Target and Fine-Tune. Does not edit AutoEQ or EQ bands.")
+                        .font(.app(size: 11, weight: .medium, design: .rounded))
                         .foregroundStyle(theme.tertiaryText)
-                    Text(bass.style.subtitle)
-                        .font(.app(size: 12, weight: .medium, design: .rounded))
-                        .foregroundStyle(theme.secondaryText)
-                        .lineLimit(1)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, 4)
                 }
-
-                VStack(spacing: 12) {
-                    bassSlider(
-                        title: "Strength",
-                        value: Binding(
-                            get: { bass.strength },
-                            set: { v in
-                                var n = bass
-                                n.strength = v
-                                n.sanitize()
-                                bass = n
-                            }
-                        ),
-                        range: BassProcessorState.strengthRange,
-                        format: { String(format: "%.0f%%", $0 * 100) },
-                        tint: bassTint
-                    )
-
-                    bassSlider(
-                        title: bass.cutoffMatchesStyleRecommendation
-                            ? "Cutoff · recommended"
-                            : "Cutoff",
-                        value: Binding(
-                            get: { bass.cutoff },
-                            set: { v in
-                                var n = bass
-                                n.cutoff = v
-                                n.sanitize()
-                                bass = n
-                            }
-                        ),
-                        range: BassProcessorState.cutoffRange,
-                        format: { String(format: "%.0f Hz", $0) },
-                        tint: bassTint
-                    )
-
-                    bassSlider(
-                        title: "Post gain",
-                        value: Binding(
-                            get: { bass.postGain },
-                            set: { v in
-                                var n = bass
-                                n.postGain = v
-                                n.sanitize()
-                                bass = n
-                            }
-                        ),
-                        range: BassProcessorState.postGainRange,
-                        format: { String(format: "%+.1f dB", $0) },
-                        tint: bassTint
-                    )
+                .padding(.horizontal, 12)
+                .padding(.top, 4)
+                .padding(.bottom, 16)
+            }
+            .scrollIndicators(.visible)
+            .background(Color.clear)
+            .navigationTitle("Bass Style")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(.hidden, for: .navigationBar)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Reset") {
+                        bass = .flat
+                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                    }
+                    .font(.app(size: 15, weight: .semibold, design: .rounded))
+                    .foregroundStyle(theme.secondaryText)
                 }
-                .padding(12)
-                .background {
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .fill(theme.isDark ? Color.black.opacity(0.22) : Color.white.opacity(0.28))
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                        .font(.app(size: 15, weight: .bold, design: .rounded))
+                        .foregroundStyle(theme.accent)
                 }
             }
         }
-        .padding(14)
-        .background {
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(theme.isDark ? Color.white.opacity(0.05) : Color.white.opacity(0.72))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .strokeBorder(
-                            LinearGradient(
-                                colors: [
-                                    bassTint.opacity(theme.isDark ? 0.45 : 0.35),
-                                    Color.white.opacity(theme.isDark ? 0.08 : 0.25)
-                                ],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            ),
-                            lineWidth: 1
-                        )
-                }
-        }
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Bass Style effect")
-        .accessibilityHint("Independent processor after Target and Fine-Tune")
+        .frostedBleedSheet(accent: bassTint)
+        .presentationDetents([.fraction(0.55), .large])
+        .presentationContentInteraction(.scrolls)
     }
 
     private func bassSlider(
         title: String,
         value: Binding<Double>,
         range: ClosedRange<Double>,
-        format: @escaping (Double) -> String,
-        tint: Color
+        format: @escaping (Double) -> String
     ) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
@@ -318,91 +338,13 @@ struct BassStyleControlsView: View {
                     .monospacedDigit()
             }
             Slider(value: value, in: range)
-                .tint(tint)
+                .tint(bassTint)
         }
     }
 }
 
-// MARK: - Limiter entry tile + editor sheet
+// MARK: - Limiter editor sheet (same chrome as EQ Controls)
 
-/// Compact pill/tile on Now Playing — opens the limiter bottom sheet.
-struct LimiterEntryTile: View {
-    let limiter: LimiterState
-    var onOpen: () -> Void
-
-    @Environment(\.grokTheme) private var theme
-    /// Warm amber — distinct from Bass (accentSecondary) and DualEQ (accent).
-    private var tint: Color { theme.fineTint }
-
-    var body: some View {
-        Button(action: onOpen) {
-            HStack(spacing: 10) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .fill(tint.opacity(theme.isDark ? 0.18 : 0.12))
-                        .frame(width: 40, height: 40)
-                    Image(systemName: "waveform.badge.minus")
-                        .font(.app(size: 16, weight: .semibold))
-                        .foregroundStyle(tint)
-                }
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 6) {
-                        Text("Limiter")
-                            .font(.app(size: 15, weight: .bold, design: .rounded))
-                            .foregroundStyle(theme.primaryText)
-                        Text("EFFECT")
-                            .font(.app(size: 9, weight: .heavy, design: .rounded))
-                            .foregroundStyle(tint)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Capsule().fill(tint.opacity(0.16)))
-                        if limiter.isEnabled {
-                            Text("ON")
-                                .font(.app(size: 9, weight: .heavy, design: .rounded))
-                                .foregroundStyle(theme.background)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(Capsule().fill(tint))
-                        }
-                    }
-                    Text(limiter.isEnabled ? limiter.summaryLabel : "Tame peaks · after Bass · Wavelet-style")
-                        .font(.app(size: 12, weight: .medium, design: .rounded))
-                        .foregroundStyle(theme.secondaryText)
-                        .lineLimit(1)
-                }
-                Spacer(minLength: 0)
-                Image(systemName: "chevron.up")
-                    .font(.app(size: 12, weight: .bold))
-                    .foregroundStyle(theme.tertiaryText)
-            }
-            .padding(14)
-            .background {
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(theme.isDark ? Color.white.opacity(0.05) : Color.white.opacity(0.72))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 16, style: .continuous)
-                            .strokeBorder(
-                                LinearGradient(
-                                    colors: [
-                                        tint.opacity(limiter.isEnabled ? (theme.isDark ? 0.55 : 0.4) : 0.18),
-                                        Color.white.opacity(theme.isDark ? 0.08 : 0.25)
-                                    ],
-                                    startPoint: .topLeading,
-                                    endPoint: .bottomTrailing
-                                ),
-                                lineWidth: 1
-                            )
-                    }
-            }
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Limiter")
-        .accessibilityValue(limiter.summaryLabel)
-        .accessibilityHint("Opens limiter settings")
-    }
-}
-
-/// Bottom sheet: enable + threshold / ratio / attack / release / post-gain.
 struct LimiterEditorSheet: View {
     @Binding var limiter: LimiterState
     @Environment(\.grokTheme) private var theme
@@ -413,14 +355,14 @@ struct LimiterEditorSheet: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    // Enable
+                VStack(alignment: .leading, spacing: 10) {
+                    // Enable card
                     HStack(spacing: 12) {
                         VStack(alignment: .leading, spacing: 3) {
                             Text("Enable limiter")
-                                .font(.app(size: 16, weight: .bold, design: .rounded))
+                                .font(.app(size: 15, weight: .bold, design: .rounded))
                                 .foregroundStyle(theme.primaryText)
-                            Text("Runs after Target, Fine-Tune, and Bass. Does not edit EQ bands.")
+                            Text("After Target, Fine-Tune, and Bass · does not edit EQ bands")
                                 .font(.app(size: 12, weight: .medium, design: .rounded))
                                 .foregroundStyle(theme.secondaryText)
                                 .fixedSize(horizontal: false, vertical: true)
@@ -440,10 +382,7 @@ struct LimiterEditorSheet: View {
                         .tint(tint)
                     }
                     .padding(14)
-                    .background {
-                        RoundedRectangle(cornerRadius: 16, style: .continuous)
-                            .fill(theme.isDark ? Color.white.opacity(0.06) : Color.white.opacity(0.7))
-                    }
+                    .glassCard(corner: 16)
 
                     VStack(spacing: 14) {
                         paramSlider(
@@ -486,32 +425,44 @@ struct LimiterEditorSheet: View {
                         )
                     }
                     .padding(14)
-                    .background {
-                        RoundedRectangle(cornerRadius: 16, style: .continuous)
-                            .fill(theme.isDark ? Color.black.opacity(0.22) : Color.white.opacity(0.55))
-                    }
+                    .glassCard(corner: 16)
                     .opacity(limiter.isEnabled ? 1 : 0.45)
                     .allowsHitTesting(limiter.isEnabled)
 
-                    Text("Tip: raise post-gain if the track feels quieter after a low threshold. Keep dual-PEQ preamps for AutoEQ headroom — this makeup is only for the limiter.")
+                    Text("Raise post-gain if the track feels quieter after a low threshold. Dual-PEQ preamps stay for AutoEQ headroom — this makeup is only for the limiter.")
                         .font(.app(size: 11, weight: .medium, design: .rounded))
                         .foregroundStyle(theme.tertiaryText)
                         .fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, 4)
                 }
-                .padding(16)
-                .padding(.bottom, 24)
+                .padding(.horizontal, 12)
+                .padding(.top, 4)
+                .padding(.bottom, 16)
             }
-            .background { LiquidGlassBackground() }
+            .scrollIndicators(.visible)
+            .background(Color.clear)
             .navigationTitle("Limiter")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(.hidden, for: .navigationBar)
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Reset") {
+                        limiter = .flat
+                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                    }
+                    .font(.app(size: 15, weight: .semibold, design: .rounded))
+                    .foregroundStyle(theme.secondaryText)
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Done") { dismiss() }
-                        .font(.app(size: 16, weight: .semibold, design: .rounded))
+                        .font(.app(size: 15, weight: .bold, design: .rounded))
                         .foregroundStyle(theme.accent)
                 }
             }
         }
+        .frostedBleedSheet(accent: tint)
+        .presentationDetents([.fraction(0.55), .large])
+        .presentationContentInteraction(.scrolls)
     }
 
     private var ratioSubtitle: String {
@@ -549,11 +500,11 @@ struct LimiterEditorSheet: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text(title)
-                    .font(.app(size: 13, weight: .semibold, design: .rounded))
-                    .foregroundStyle(theme.primaryText)
+                    .font(.app(size: 12, weight: .semibold, design: .rounded))
+                    .foregroundStyle(theme.secondaryText)
                 Spacer()
                 Text(format(value.wrappedValue))
-                    .font(.app(size: 13, weight: .bold, design: .rounded))
+                    .font(.app(size: 12, weight: .bold, design: .rounded))
                     .foregroundStyle(theme.primaryText)
                     .monospacedDigit()
             }

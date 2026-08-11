@@ -2,15 +2,14 @@
 //  LimiterProcessor.swift
 //  EQtargetsMusic
 //
-//  Wavelet-inspired dynamics stage — independent of DualEQ / Bass Style.
+//  Dynamics / limiter stage — independent of DualEQ / Bass Style.
 //
 //  Chain position:
 //    Player → Target PEQ → Fine-Tune PEQ → Bass → Limiter → deck mixer
 //
 //  Hardware: Apple AUDynamicsProcessor (high-quality, low-latency system AU).
 //  It does not expose a fixed ratio knob; we map user ratio → HeadRoom so
-//  lower headroom = stronger compression, matching Wavelet-style “ratio” control.
-//  OverallGain carries post-gain (makeup) after the dynamics curve.
+//  lower headroom = stronger compression. OverallGain carries post-gain (makeup).
 //
 
 import Foundation
