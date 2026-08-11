@@ -50,7 +50,8 @@ struct RootTabView: View {
     /// Pre-warmed art tint/thumb for continuous full-player background (sync, no black placeholder).
     @State private var playerArtworkVisuals: PlayerArtworkVisuals = .brandedFallback(accent: .blue)
 
-    private let miniDockGap: CGFloat = 4
+    /// Gap between Liquid Glass mini capsule and the system tab dock.
+    private let miniDockGap: CGFloat = 8
 
     private var hasCurrentPlayableTrack: Bool {
         player.currentTrack != nil
@@ -168,7 +169,7 @@ struct RootTabView: View {
                 }
                 .zIndex(0)
 
-                // zIndex 10 — MiniPlayer docked to bottom only.
+                // zIndex 10 — Liquid Glass mini capsule above the system tab dock.
                 // Use overlay alignment so empty space does NOT intercept nav / list taps
                 // (full-screen VStack was eating hamburger hits while music played).
                 if hasCurrentPlayableTrack {

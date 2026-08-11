@@ -136,6 +136,7 @@ struct MusicListView: View {
                 .listStyle(.plain)
                 .scrollContentBackground(.hidden)
                 .grokScrollEdgeBlur()
+                .miniPlayerScrollRunway(hasTrack: player.currentTrack != nil)
                 // Faster list scrolling — fewer offscreen views retained.
                 .environment(\.defaultMinListRowHeight, 56)
             }
@@ -314,6 +315,7 @@ struct ArtistsListView: View {
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .grokScrollEdgeBlur()
+        .miniPlayerScrollRunway(hasTrack: player.currentTrack != nil)
         .background { theme.background.ignoresSafeArea() }
         .grokStyleNavigationChrome(title: "Artists")
     }
@@ -400,6 +402,7 @@ struct ArtistDetailView: View {
         .listStyle(.insetGrouped)
         .scrollContentBackground(.hidden)
         .grokScrollEdgeBlur()
+        .miniPlayerScrollRunway(hasTrack: player.currentTrack != nil)
         .background { theme.background.ignoresSafeArea() }
         // Keep hamburger available on detail (back + menu); users expect Settings from album art flows.
         .grokStyleNavigationChrome(title: artist.name, showsBack: true, showsMenu: true) {
@@ -486,6 +489,7 @@ struct AlbumsListView: View {
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .grokScrollEdgeBlur()
+        .miniPlayerScrollRunway(hasTrack: player.currentTrack != nil)
         .background { theme.background.ignoresSafeArea() }
         .grokStyleNavigationChrome(title: "Albums")
     }
@@ -554,6 +558,7 @@ struct AlbumDetailView: View {
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .grokScrollEdgeBlur()
+        .miniPlayerScrollRunway(hasTrack: player.currentTrack != nil)
         .background { theme.background.ignoresSafeArea() }
         .grokStyleNavigationChrome(title: album.name, showsBack: true, showsMenu: true) {
             Button(role: .destructive) {
@@ -704,6 +709,7 @@ struct SearchView: View {
                 .listStyle(.plain)
                 .scrollContentBackground(.hidden)
                 .grokScrollEdgeBlur()
+                .miniPlayerScrollRunway(hasTrack: player.currentTrack != nil)
             }
         }
         .background { theme.background.ignoresSafeArea() }

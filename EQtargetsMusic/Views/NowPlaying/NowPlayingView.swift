@@ -37,11 +37,17 @@ struct NowPlayingView: View {
                 )
                 .padding(16)
                 .glassCard(corner: 20)
+
+                // Empty runway: scroll Limiter / Bass fully above the mini into open space.
+                Color.clear
+                    .frame(height: player.currentTrack != nil ? 180 : 72)
+                    .accessibilityHidden(true)
             }
             .padding(16)
             .padding(.bottom, 24)
         }
         .scrollIndicators(.visible)
+        .miniPlayerScrollRunway(hasTrack: player.currentTrack != nil)
         .grokScrollEdgeBlur()
         .background { LiquidGlassBackground() }
         .grokStyleNavigationChrome(title: "Now Playing") {
