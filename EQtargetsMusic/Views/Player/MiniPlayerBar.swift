@@ -187,18 +187,21 @@ struct MiniPlayerBar: View {
             let w = max(geo.size.width, 1)
             let fill = w * progress
             ZStack(alignment: .bottomLeading) {
-                // Soft unplayed track — barely there so glass still reads first.
-                Rectangle()
+                // Soft unplayed track — capsule caps so ends aren’t square.
+                Capsule(style: .continuous)
                     .fill(theme.primaryText.opacity(isDark ? 0.10 : 0.08))
                     .frame(height: Self.progressH)
 
-                // Solid played fill (accent, single color — not a gradient strip).
+                // Solid played fill — min width = height keeps the leading end round.
                 // No animation: progress ticks every frame; animating would smear.
-                Rectangle()
-                    .fill(theme.accent.opacity(isDark ? 0.92 : 0.88))
-                    .frame(width: max(0, fill), height: Self.progressH)
+                if fill > 0.5 {
+                    Capsule(style: .continuous)
+                        .fill(theme.accent.opacity(isDark ? 0.92 : 0.88))
+                        .frame(width: max(Self.progressH, fill), height: Self.progressH)
+                }
             }
             .frame(width: w, height: geo.size.height, alignment: .bottom)
+            .clipShape(Capsule(style: .continuous))
         }
         .frame(height: Self.progressH)
         .accessibilityHidden(true)

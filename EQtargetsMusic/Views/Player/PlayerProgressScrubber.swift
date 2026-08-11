@@ -153,25 +153,30 @@ struct PlayerProgressScrubber: View {
             let y = geo.size.height * 0.5
 
             ZStack(alignment: .leading) {
-                // Rest track — full width, flush rectangle (not inset capsule island)
-                Rectangle()
+                // Rest track — continuous capsule so start/end caps are soft, not square.
+                Capsule(style: .continuous)
                     .fill(trackRest)
                     .frame(width: width, height: railH)
                     .position(x: width * 0.5, y: y)
 
-                // Played fill — solid accent / white, grows from leading edge
-                Rectangle()
-                    .fill(trackPlayed)
-                    .frame(width: max(0, fill), height: railH)
-                    .position(x: max(0, fill) * 0.5, y: y)
+                // Played fill — same capsule language; min width keeps the leading cap round.
+                if fill > 0.5 {
+                    Capsule(style: .continuous)
+                        .fill(trackPlayed)
+                        .frame(width: max(railH, fill), height: railH)
+                        .position(x: max(railH, fill) * 0.5, y: y)
+                }
 
-                // Minimal playhead tick (not a big knob — keeps edge-rail honesty)
+                // Soft playhead pip (round, not a square tick)
                 if progress > 0.002 {
-                    let hx = min(width - 1, max(1, fill))
-                    RoundedRectangle(cornerRadius: 1, style: .continuous)
-                        .fill(playheadColor.opacity(isScrubbing ? 1 : 0.9))
-                        .frame(width: isScrubbing ? 3 : 2, height: isScrubbing ? 14 : 10)
-                        .shadow(color: playheadColor.opacity(isScrubbing ? 0.35 : 0), radius: 4, y: 0)
+                    let hx = min(width - railH * 0.5, max(railH * 0.5, fill))
+                    Circle()
+                        .fill(playheadColor.opacity(isScrubbing ? 1 : 0.92))
+                        .frame(
+                            width: isScrubbing ? 8 : 6,
+                            height: isScrubbing ? 8 : 6
+                        )
+                        .shadow(color: playheadColor.opacity(isScrubbing ? 0.35 : 0.12), radius: isScrubbing ? 4 : 2, y: 0)
                         .position(x: hx, y: y)
                 }
             }
