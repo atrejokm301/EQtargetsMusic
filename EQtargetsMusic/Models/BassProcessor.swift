@@ -33,7 +33,7 @@ enum BassStyle: String, CaseIterable, Identifiable, Codable {
 
     var title: String {
         switch self {
-        case .none: return "None"
+        case .none: return "Off"
         case .transientPunch: return "Transient Punch"
         case .sustainRumble: return "Sustain / Rumble"
         case .naturalClean: return "Natural Clean"
@@ -41,10 +41,9 @@ enum BassStyle: String, CaseIterable, Identifiable, Codable {
     }
 
     /// Short chip label so all styles fit one row without horizontal scroll.
-    /// `.none` is icon-only in the UI (`compactTitle` is empty).
     var compactTitle: String {
         switch self {
-        case .none: return ""
+        case .none: return "Off"
         case .transientPunch: return "Punch"
         case .sustainRumble: return "Rumble"
         case .naturalClean: return "Clean"
@@ -62,7 +61,8 @@ enum BassStyle: String, CaseIterable, Identifiable, Codable {
 
     var systemImage: String {
         switch self {
-        case .none: return "hifispeaker.slash"
+        // Reliable SF Symbols only — avoid missing names that render as a blank chip.
+        case .none: return "speaker.slash.fill"
         case .transientPunch: return "waveform.path"
         case .sustainRumble: return "water.waves"
         case .naturalClean: return "leaf"

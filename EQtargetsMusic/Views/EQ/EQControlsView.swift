@@ -195,16 +195,14 @@ struct BassStyleEditorSheet: View {
                                     HStack(spacing: 4) {
                                         Image(systemName: style.systemImage)
                                             .font(.app(size: 11, weight: .semibold))
-                                        if !style.compactTitle.isEmpty {
-                                            Text(style.compactTitle)
-                                                .font(.app(size: 11, weight: .semibold, design: .rounded))
-                                                .lineLimit(1)
-                                                .minimumScaleFactor(0.85)
-                                        }
+                                        Text(style.compactTitle)
+                                            .font(.app(size: 11, weight: .semibold, design: .rounded))
+                                            .lineLimit(1)
+                                            .minimumScaleFactor(0.85)
                                     }
                                     .frame(maxWidth: .infinity)
                                     .foregroundStyle(selected ? theme.background : theme.primaryText)
-                                    .padding(.horizontal, style == .none ? 8 : 6)
+                                    .padding(.horizontal, 6)
                                     .padding(.vertical, 10)
                                     .background(
                                         Capsule()
