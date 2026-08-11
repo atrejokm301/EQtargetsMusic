@@ -15,6 +15,7 @@ import AVFoundation
 struct EQControlsView: View {
     @Binding var dual: DualEQState
     @Binding var bass: BassProcessorState
+    @Binding var limiter: LimiterState
     var onImportAutoEQ: () -> Void
     /// Optional toast when assigning devices (wired from Now Playing / player).
     var onToast: ((String) -> Void)? = nil
@@ -23,6 +24,7 @@ struct EQControlsView: View {
     @EnvironmentObject private var presetStore: EQPresetStore
 
     @State private var showEQEditor = false
+    @State private var showLimiterSheet = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -42,7 +44,7 @@ struct EQControlsView: View {
             }
 
             // Graph stays exactly on Now Playing — not moved into the sheet.
-            // Graph shows Target + Fine-Tune only (Bass is post-PEQ, not drawn here).
+            // Graph shows Target + Fine-Tune only (Bass / Limiter are post-PEQ).
             EQGraphView(dual: dual)
 
             Button {
@@ -74,6 +76,11 @@ struct EQControlsView: View {
 
             // Independent Bass stage — never writes into Target / Fine-Tune.
             BassStyleControlsView(bass: $bass)
+
+            // Post-Bass limiter tile → bottom sheet (Wavelet-style dynamics).
+            LimiterEntryTile(limiter: limiter) {
+                showLimiterSheet = true
+            }
         }
         .sheet(isPresented: $showEQEditor) {
             EQEditorSheet(
@@ -88,6 +95,12 @@ struct EQControlsView: View {
             )
             .environmentObject(presetStore)
             .environment(\.grokTheme, theme)
+        }
+        .sheet(isPresented: $showLimiterSheet) {
+            LimiterEditorSheet(limiter: $limiter)
+                .environment(\.grokTheme, theme)
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
         }
     }
 
@@ -304,6 +317,249 @@ struct BassStyleControlsView: View {
                     .foregroundStyle(theme.primaryText)
                     .monospacedDigit()
             }
+            Slider(value: value, in: range)
+                .tint(tint)
+        }
+    }
+}
+
+// MARK: - Limiter entry tile + editor sheet
+
+/// Compact pill/tile on Now Playing — opens the limiter bottom sheet.
+struct LimiterEntryTile: View {
+    let limiter: LimiterState
+    var onOpen: () -> Void
+
+    @Environment(\.grokTheme) private var theme
+    /// Warm amber — distinct from Bass (accentSecondary) and DualEQ (accent).
+    private var tint: Color { theme.fineTint }
+
+    var body: some View {
+        Button(action: onOpen) {
+            HStack(spacing: 10) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(tint.opacity(theme.isDark ? 0.18 : 0.12))
+                        .frame(width: 40, height: 40)
+                    Image(systemName: "waveform.badge.minus")
+                        .font(.app(size: 16, weight: .semibold))
+                        .foregroundStyle(tint)
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        Text("Limiter")
+                            .font(.app(size: 15, weight: .bold, design: .rounded))
+                            .foregroundStyle(theme.primaryText)
+                        Text("EFFECT")
+                            .font(.app(size: 9, weight: .heavy, design: .rounded))
+                            .foregroundStyle(tint)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Capsule().fill(tint.opacity(0.16)))
+                        if limiter.isEnabled {
+                            Text("ON")
+                                .font(.app(size: 9, weight: .heavy, design: .rounded))
+                                .foregroundStyle(theme.background)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(Capsule().fill(tint))
+                        }
+                    }
+                    Text(limiter.isEnabled ? limiter.summaryLabel : "Tame peaks · after Bass · Wavelet-style")
+                        .font(.app(size: 12, weight: .medium, design: .rounded))
+                        .foregroundStyle(theme.secondaryText)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.up")
+                    .font(.app(size: 12, weight: .bold))
+                    .foregroundStyle(theme.tertiaryText)
+            }
+            .padding(14)
+            .background {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(theme.isDark ? Color.white.opacity(0.05) : Color.white.opacity(0.72))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .strokeBorder(
+                                LinearGradient(
+                                    colors: [
+                                        tint.opacity(limiter.isEnabled ? (theme.isDark ? 0.55 : 0.4) : 0.18),
+                                        Color.white.opacity(theme.isDark ? 0.08 : 0.25)
+                                    ],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                ),
+                                lineWidth: 1
+                            )
+                    }
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Limiter")
+        .accessibilityValue(limiter.summaryLabel)
+        .accessibilityHint("Opens limiter settings")
+    }
+}
+
+/// Bottom sheet: enable + threshold / ratio / attack / release / post-gain.
+struct LimiterEditorSheet: View {
+    @Binding var limiter: LimiterState
+    @Environment(\.grokTheme) private var theme
+    @Environment(\.dismiss) private var dismiss
+
+    private var tint: Color { theme.fineTint }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    // Enable
+                    HStack(spacing: 12) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Enable limiter")
+                                .font(.app(size: 16, weight: .bold, design: .rounded))
+                                .foregroundStyle(theme.primaryText)
+                            Text("Runs after Target, Fine-Tune, and Bass. Does not edit EQ bands.")
+                                .font(.app(size: 12, weight: .medium, design: .rounded))
+                                .foregroundStyle(theme.secondaryText)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        Spacer(minLength: 8)
+                        Toggle("", isOn: Binding(
+                            get: { limiter.isEnabled },
+                            set: { on in
+                                var n = limiter
+                                n.isEnabled = on
+                                n.sanitize()
+                                limiter = n
+                                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                            }
+                        ))
+                        .labelsHidden()
+                        .tint(tint)
+                    }
+                    .padding(14)
+                    .background {
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .fill(theme.isDark ? Color.white.opacity(0.06) : Color.white.opacity(0.7))
+                    }
+
+                    VStack(spacing: 14) {
+                        paramSlider(
+                            title: "Threshold",
+                            subtitle: "Gain reduction starts above this level",
+                            value: binding(\.thresholdDB),
+                            range: LimiterState.thresholdRange,
+                            format: { String(format: "%+.1f dB", $0) }
+                        )
+                        paramSlider(
+                            title: "Ratio",
+                            subtitle: ratioSubtitle,
+                            value: binding(\.ratio),
+                            range: LimiterState.ratioRange,
+                            format: { r in
+                                if r >= LimiterState.infiniteRatioDisplay - 0.05 { return "∞:1" }
+                                return String(format: "%.1f:1", r)
+                            }
+                        )
+                        paramSlider(
+                            title: "Attack",
+                            subtitle: "How fast peaks are caught",
+                            value: binding(\.attackMs),
+                            range: LimiterState.attackMsRange,
+                            format: { String(format: "%.1f ms", $0) }
+                        )
+                        paramSlider(
+                            title: "Release",
+                            subtitle: "How quickly level recovers",
+                            value: binding(\.releaseMs),
+                            range: LimiterState.releaseMsRange,
+                            format: { String(format: "%.0f ms", $0) }
+                        )
+                        paramSlider(
+                            title: "Post-gain",
+                            subtitle: "Makeup after limiting (−12…+12 dB)",
+                            value: binding(\.postGainDB),
+                            range: LimiterState.postGainRange,
+                            format: { String(format: "%+.1f dB", $0) }
+                        )
+                    }
+                    .padding(14)
+                    .background {
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .fill(theme.isDark ? Color.black.opacity(0.22) : Color.white.opacity(0.55))
+                    }
+                    .opacity(limiter.isEnabled ? 1 : 0.45)
+                    .allowsHitTesting(limiter.isEnabled)
+
+                    Text("Tip: raise post-gain if the track feels quieter after a low threshold. Keep dual-PEQ preamps for AutoEQ headroom — this makeup is only for the limiter.")
+                        .font(.app(size: 11, weight: .medium, design: .rounded))
+                        .foregroundStyle(theme.tertiaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(16)
+                .padding(.bottom, 24)
+            }
+            .background { LiquidGlassBackground() }
+            .navigationTitle("Limiter")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                        .font(.app(size: 16, weight: .semibold, design: .rounded))
+                        .foregroundStyle(theme.accent)
+                }
+            }
+        }
+    }
+
+    private var ratioSubtitle: String {
+        if limiter.ratio >= LimiterState.infiniteRatioDisplay - 0.05 {
+            return "Near brickwall — strongest peak control"
+        }
+        if limiter.ratio >= 8 {
+            return "Strong limiting — good for hot live tracks"
+        }
+        if limiter.ratio >= 4 {
+            return "Musical compression / soft limiting"
+        }
+        return "Gentle leveling"
+    }
+
+    private func binding(_ keyPath: WritableKeyPath<LimiterState, Double>) -> Binding<Double> {
+        Binding(
+            get: { limiter[keyPath: keyPath] },
+            set: { v in
+                var n = limiter
+                n[keyPath: keyPath] = v
+                n.sanitize()
+                limiter = n
+            }
+        )
+    }
+
+    private func paramSlider(
+        title: String,
+        subtitle: String,
+        value: Binding<Double>,
+        range: ClosedRange<Double>,
+        format: @escaping (Double) -> String
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(title)
+                    .font(.app(size: 13, weight: .semibold, design: .rounded))
+                    .foregroundStyle(theme.primaryText)
+                Spacer()
+                Text(format(value.wrappedValue))
+                    .font(.app(size: 13, weight: .bold, design: .rounded))
+                    .foregroundStyle(theme.primaryText)
+                    .monospacedDigit()
+            }
+            Text(subtitle)
+                .font(.app(size: 11, weight: .medium, design: .rounded))
+                .foregroundStyle(theme.secondaryText)
             Slider(value: value, in: range)
                 .tint(tint)
         }

@@ -31,6 +31,7 @@ struct NowPlayingView: View {
                 EQControlsView(
                     dual: $player.dual,
                     bass: $player.bass,
+                    limiter: $player.limiter,
                     onImportAutoEQ: { showImporter = true },
                     onToast: { player.showToast($0) }
                 )
@@ -70,7 +71,7 @@ struct NowPlayingView: View {
         .alert("System-wide EQ on iOS", isPresented: $showSystemWideInfo) {
             Button("Got it", role: .cancel) {}
         } message: {
-            Text("Apple does not allow third-party apps to equalize YouTube, Music, Netflix, or other apps. EQtargets Music applies Target + Fine-Tune + Bass Style only to audio played inside this app.")
+            Text("Apple does not allow third-party apps to equalize YouTube, Music, Netflix, or other apps. EQtargets Music applies Target + Fine-Tune + Bass Style + Limiter only to audio played inside this app.")
         }
         // Toast is rendered globally from RootTabView so library actions are visible too.
     }
