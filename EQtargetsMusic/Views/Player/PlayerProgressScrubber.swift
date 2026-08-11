@@ -2,9 +2,9 @@
 //  PlayerProgressScrubber.swift
 //  EQtargetsMusic
 //
-//  Honest Apple Music–style line scrubber for full player + Now Playing.
-//  Thin track + soft thumb — no fake waveform. Isolates progress ticks so
-//  parent trees are not rebuilt every frame. Seek via AudioPlayerEngine.
+//  Edge-rail scrubber (same language as the mini player chin) for full player
+//  + Now Playing. Honest progress — no fake waveform. Thin flush rail, soft
+//  playhead, time labels, drag-to-seek. Isolates progress ticks from parents.
 //
 
 import SwiftUI
@@ -54,14 +54,14 @@ struct PlayerProgressScrubber: View {
 
     private var isDark: Bool { scheme == .dark }
 
-    // MARK: Palette (honest materials — no “audio analysis” colors)
+    // MARK: Palette — matches mini edge rail language
 
     private var trackRest: Color {
         switch chrome {
         case .immersive:
-            return Color.white.opacity(0.22)
+            return Color.white.opacity(0.18)
         case .nowPlaying:
-            return theme.primaryText.opacity(isDark ? 0.16 : 0.12)
+            return theme.primaryText.opacity(isDark ? 0.12 : 0.10)
         }
     }
 
@@ -70,25 +70,16 @@ struct PlayerProgressScrubber: View {
         case .immersive:
             return Color.white.opacity(0.92)
         case .nowPlaying:
-            return theme.accent
+            return theme.accent.opacity(isDark ? 0.92 : 0.88)
         }
     }
 
-    private var thumbFill: Color {
+    private var playheadColor: Color {
         switch chrome {
         case .immersive:
             return Color.white
         case .nowPlaying:
-            return Color.white
-        }
-    }
-
-    private var thumbStroke: Color {
-        switch chrome {
-        case .immersive:
-            return Color.white.opacity(0.15)
-        case .nowPlaying:
-            return theme.primaryText.opacity(isDark ? 0.12 : 0.10)
+            return theme.primaryText.opacity(0.9)
         }
     }
 
@@ -104,8 +95,9 @@ struct PlayerProgressScrubber: View {
     // MARK: Body
 
     var body: some View {
-        VStack(spacing: 8) {
-            lineScrubber
+        VStack(spacing: 10) {
+            edgeRail
+                // Tall hit target; visual rail stays thin (mini language).
                 .frame(height: 28)
                 .contentShape(Rectangle())
                 .accessibilityElement()
@@ -150,42 +142,40 @@ struct PlayerProgressScrubber: View {
         }
     }
 
-    // MARK: - Line scrubber (Apple Music energy)
+    // MARK: - Edge rail (mini chin, larger + scrubbable)
 
-    private var lineScrubber: some View {
+    private var edgeRail: some View {
         GeometryReader { geo in
             let width = max(geo.size.width, 1)
-            let trackH: CGFloat = isScrubbing ? 5 : 3
-            let thumbR: CGFloat = isScrubbing ? 8 : 6
+            // Mini uses 2pt; scrub expands slightly under finger so position is clear.
+            let railH: CGFloat = isScrubbing ? 4 : 2.5
+            let fill = width * progress
             let y = geo.size.height * 0.5
-            let x = width * progress
 
             ZStack(alignment: .leading) {
-                // Unplayed track
-                Capsule(style: .continuous)
+                // Rest track — full width, flush rectangle (not inset capsule island)
+                Rectangle()
                     .fill(trackRest)
-                    .frame(height: trackH)
-                    .frame(maxWidth: .infinity)
+                    .frame(width: width, height: railH)
                     .position(x: width * 0.5, y: y)
 
-                // Played track
-                Capsule(style: .continuous)
+                // Played fill — solid accent / white, grows from leading edge
+                Rectangle()
                     .fill(trackPlayed)
-                    .frame(width: max(trackH, x), height: trackH)
-                    .position(x: max(trackH, x) * 0.5, y: y)
+                    .frame(width: max(0, fill), height: railH)
+                    .position(x: max(0, fill) * 0.5, y: y)
 
-                // Soft thumb — scales up slightly while scrubbing
-                Circle()
-                    .fill(thumbFill)
-                    .frame(width: thumbR * 2, height: thumbR * 2)
-                    .overlay {
-                        Circle()
-                            .strokeBorder(thumbStroke, lineWidth: 0.5)
-                    }
-                    .shadow(color: .black.opacity(isScrubbing ? 0.22 : 0.14), radius: isScrubbing ? 5 : 3, y: 1)
-                    .position(x: min(max(x, thumbR), width - thumbR), y: y)
+                // Minimal playhead tick (not a big knob — keeps edge-rail honesty)
+                if progress > 0.002 {
+                    let hx = min(width - 1, max(1, fill))
+                    RoundedRectangle(cornerRadius: 1, style: .continuous)
+                        .fill(playheadColor.opacity(isScrubbing ? 1 : 0.9))
+                        .frame(width: isScrubbing ? 3 : 2, height: isScrubbing ? 14 : 10)
+                        .shadow(color: playheadColor.opacity(isScrubbing ? 0.35 : 0), radius: 4, y: 0)
+                        .position(x: hx, y: y)
+                }
             }
-            .animation(.spring(response: 0.28, dampingFraction: 0.86), value: isScrubbing)
+            .animation(.spring(response: 0.28, dampingFraction: 0.88), value: isScrubbing)
             .gesture(
                 DragGesture(minimumDistance: 0, coordinateSpace: .local)
                     .onChanged { value in
