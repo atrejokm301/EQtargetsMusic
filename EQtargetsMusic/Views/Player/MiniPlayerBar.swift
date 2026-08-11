@@ -33,7 +33,8 @@ struct MiniPlayerBar: View {
     private static let artCorner: CGFloat = 12
     private static let hPad: CGFloat = 10
     private static let controlW: CGFloat = 44
-    private static let progressH: CGFloat = 2.5
+    /// Apple Music–style edge rail: thin, flush to the capsule chin.
+    private static let progressH: CGFloat = 2
 
     private var isDark: Bool { scheme == .dark }
 
@@ -54,10 +55,9 @@ struct MiniPlayerBar: View {
         .frame(height: Self.barHeight)
         .frame(maxWidth: .infinity)
         .background { glassChrome }
+        // Progress is part of the chrome rim — full width, zero inset, clipped by capsule.
         .overlay(alignment: .bottom) {
-            progressTrack
-                .padding(.horizontal, 18)
-                .padding(.bottom, 7)
+            edgeProgressRail
                 .allowsHitTesting(false)
         }
         .clipShape(Capsule(style: .continuous))
@@ -180,27 +180,27 @@ struct MiniPlayerBar: View {
         }
     }
 
-    private var progressTrack: some View {
+    /// Thin edge rail flush to the bottom of the glass pill (Apple Music energy).
+    /// No side padding, no gradient candy, no always-on stub — fill grows from 0.
+    private var edgeProgressRail: some View {
         GeometryReader { geo in
             let w = max(geo.size.width, 1)
-            let fill = max(Self.progressH * 2, w * progress)
-            ZStack(alignment: .leading) {
-                Capsule(style: .continuous)
-                    .fill(theme.primaryText.opacity(isDark ? 0.14 : 0.10))
+            let fill = w * progress
+            ZStack(alignment: .bottomLeading) {
+                // Soft unplayed track — barely there so glass still reads first.
+                Rectangle()
+                    .fill(theme.primaryText.opacity(isDark ? 0.10 : 0.08))
                     .frame(height: Self.progressH)
-                Capsule(style: .continuous)
-                    .fill(
-                        LinearGradient(
-                            colors: [theme.accent, theme.accentSecondary.opacity(0.95)],
-                            startPoint: .leading,
-                            endPoint: .trailing
-                        )
-                    )
-                    .frame(width: fill, height: Self.progressH)
+
+                // Solid played fill (accent, single color — not a gradient strip).
+                // No animation: progress ticks every frame; animating would smear.
+                Rectangle()
+                    .fill(theme.accent.opacity(isDark ? 0.92 : 0.88))
+                    .frame(width: max(0, fill), height: Self.progressH)
             }
-            .frame(maxHeight: .infinity, alignment: .bottom)
+            .frame(width: w, height: geo.size.height, alignment: .bottom)
         }
-        .frame(height: 8)
+        .frame(height: Self.progressH)
         .accessibilityHidden(true)
     }
 
