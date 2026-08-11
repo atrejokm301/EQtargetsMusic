@@ -291,7 +291,8 @@ struct ImmersivePlayerView: View {
             if mountControls {
                 PlayerProgressScrubber(
                     isInteractive: p >= M.interactiveControlsThreshold,
-                    isCollapseDragging: false
+                    isCollapseDragging: false,
+                    chrome: .immersive
                 )
                 .padding(.horizontal, 32)
                 .opacity(Double(scrubT))

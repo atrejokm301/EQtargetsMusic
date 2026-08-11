@@ -202,47 +202,14 @@ private struct NowPlayingTransportCard: View {
     @EnvironmentObject private var player: AudioPlayerEngine
     @Environment(\.grokTheme) private var theme
 
-    @State private var isScrubbing = false
-    @State private var scrubTime: TimeInterval = 0
-    @State private var displayTime: TimeInterval = 0
-
     var body: some View {
         VStack(spacing: 12) {
-            VStack(spacing: 8) {
-                Slider(
-                    value: Binding(
-                        get: { isScrubbing ? scrubTime : displayTime },
-                        set: { scrubTime = $0 }
-                    ),
-                    in: 0 ... max(player.duration, 0.001),
-                    onEditingChanged: { editing in
-                        if editing {
-                            if !isScrubbing { scrubTime = displayTime }
-                            isScrubbing = true
-                        } else {
-                            let target = scrubTime
-                            player.seek(to: target)
-                            displayTime = target
-                            scrubTime = target
-                            isScrubbing = false
-                        }
-                    }
-                )
-                .tint(theme.accent)
-                .disabled(player.currentTrack == nil || player.duration <= 0)
-                .transaction { $0.animation = nil }
-                .animation(nil, value: isScrubbing)
-                .animation(nil, value: displayTime)
-
-                HStack {
-                    Text(formatTime(isScrubbing ? scrubTime : displayTime))
-                    Spacer()
-                    Text(formatTime(player.duration))
-                }
-                .font(.app(size: 11, weight: .medium, design: .monospaced))
-                .foregroundStyle(theme.tertiaryText)
-                .transaction { $0.animation = nil }
-            }
+            // Shared waveform scrubber (same as full player) — times stay under the bars.
+            PlayerProgressScrubber(
+                isInteractive: true,
+                isCollapseDragging: false,
+                chrome: .nowPlaying
+            )
 
             HStack(spacing: 24) {
                 Button { player.cycleShuffleMode() } label: {
@@ -285,21 +252,6 @@ private struct NowPlayingTransportCard: View {
         }
         .padding(16)
         .glassCard(corner: 20)
-        .onAppear { displayTime = player.currentTime }
-        .onChange(of: player.currentTrack?.id) { _ in
-            displayTime = player.currentTime
-        }
-        .onReceive(player.progressSubject) { t in
-            guard !isScrubbing else { return }
-            displayTime = t
-        }
-    }
-
-    private func formatTime(_ t: TimeInterval) -> String {
-        guard t.isFinite, t >= 0 else { return "0:00" }
-        let m = Int(t) / 60
-        let s = Int(t) % 60
-        return String(format: "%d:%02d", m, s)
     }
 }
 
