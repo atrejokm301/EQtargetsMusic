@@ -1741,7 +1741,7 @@ extension AudioPlayerEngine {
         let trim = SilenceAnalyzer.analyzeFast(file)
         storeSilenceTrim(key, trim)
         playerLog.info(
-            "silenceTrim(fast v2): intro=\(trim.introSkip, format: .fixed(precision: 2))s end=\(trim.effectiveEnd, format: .fixed(precision: 2))s playable=\(trim.playableDuration, format: .fixed(precision: 1))s"
+            "silenceTrim(fast v3): intro=\(trim.introSkip, format: .fixed(precision: 2))s end=\(trim.effectiveEnd, format: .fixed(precision: 2))s playable=\(trim.playableDuration, format: .fixed(precision: 1))s"
         )
         return trim
     }
@@ -1766,7 +1766,7 @@ extension AudioPlayerEngine {
                 guard let self else { return }
                 self.storeSilenceTrim(key, trim)
                 playerLog.info(
-                    "silenceTrim(full v2): intro=\(trim.introSkip, format: .fixed(precision: 2))s end=\(trim.effectiveEnd, format: .fixed(precision: 2))s playable=\(trim.playableDuration, format: .fixed(precision: 1))s"
+                    "silenceTrim(full v3): intro=\(trim.introSkip, format: .fixed(precision: 2))s end=\(trim.effectiveEnd, format: .fixed(precision: 2))s playable=\(trim.playableDuration, format: .fixed(precision: 1))s"
                 )
                 guard self.crossfade.skipSilence else { return }
                 guard self.loadGeneration == generation else { return }

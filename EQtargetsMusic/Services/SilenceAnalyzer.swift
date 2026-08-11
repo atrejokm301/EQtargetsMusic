@@ -2,18 +2,23 @@
 //  SilenceAnalyzer.swift
 //  EQtargetsMusic
 //
-//  Skip-silence v2 — playable window detection for live alabanzas / long
-//  intros / trailing applause.
+//  Skip-silence v3 — playable-window detection for live alabanzas / long
+//  intros / trailing dead air.
 //
-//  Fast path: intro-only, coarse windows (main-thread safe, tens of ms).
-//  Full path: intro + outro with adaptive noise floor (background + cache).
+//  Goals (same product job as v1/v2, better mechanics):
+//  - Skip leading silence / room tone without chopping soft musical attacks
+//  - Ignore isolated claps / coughs at the start of live recordings
+//  - Trim trailing silence so natural crossfade arms before dead air
+//  - Stay cheap: head + tail only, never full-file decode; fast path main-safe
 //
-//  Improvements vs v1:
-//  - Adaptive gate from noise floor + peak (not peak-only %)
-//  - Longer sustain required so single claps don't count as “music”
-//  - Intro cap instead of “zero the skip if too long” (that killed live intros)
-//  - Outro requires real trailing quiet before trimming soft fades
-//  - Safer minimum playable body so we never crush short tracks
+//  v3 algorithm (on-device, no ML):
+//  1. Short-time RMS in dB via vDSP (mono energy)
+//  2. Energy flux (positive first difference) as onset / activity cue
+//  3. Robust noise floor from low percentiles of the scan region
+//  4. Dual-threshold hysteresis VAD (open high, hold low) like telephony VAD
+//  5. Require sustained “music open” before committing intro skip
+//  6. Outro: last sustained music run + trailing-quiet confirmation + pad
+//  7. Optional mid-file peak sample (full path) so soft songs still open
 //
 
 import Foundation
@@ -22,6 +27,8 @@ import Accelerate
 import os
 
 private let silenceLog = Logger(subsystem: "com.eqtargets.music", category: "Silence")
+
+// MARK: - Public model
 
 /// Playable window inside a file after silence trim.
 struct SilenceTrim: Equatable {
@@ -45,61 +52,65 @@ struct SilenceTrim: Equatable {
     }
 }
 
+// MARK: - Analyzer
+
 enum SilenceAnalyzer {
     /// How far into the file we look for music start (live intros can be long).
-    /// Capped for battery — 48s covers most worship intros without a full-file read.
-    static let maxIntroScan: TimeInterval = 48
-    /// How much tail we search for trailing silence / applause.
-    static let maxOutroScan: TimeInterval = 72
-    /// Keep a little tail after last loud window so endings don't clip.
-    static let outroPad: TimeInterval = 0.55
-    /// Music must stay loud this long to count as start (filters claps).
-    static let minMusicHold: TimeInterval = 0.55
+    static let maxIntroScan: TimeInterval = 56
+    /// How much tail we search for trailing silence.
+    static let maxOutroScan: TimeInterval = 90
+    /// Keep a little tail after last music so endings / reverb don't clip.
+    static let outroPad: TimeInterval = 0.65
+    /// Continuous open-gate time required before we treat a region as music.
+    static let minMusicHold: TimeInterval = 0.70
     /// Trailing quiet must last this long before we trim the end.
-    static let minTrailingQuiet: TimeInterval = 1.6
+    static let minTrailingQuiet: TimeInterval = 1.35
     /// Never skip more than this fraction of the file as intro.
-    static let maxIntroFraction: Double = 0.42
+    static let maxIntroFraction: Double = 0.45
     /// Absolute intro cap.
-    static let maxIntroAbsolute: TimeInterval = 64
+    static let maxIntroAbsolute: TimeInterval = 72
     /// Never leave less playable body than this (unless the file is shorter).
     static let minPlayableBody: TimeInterval = 12
+    /// Fast path only needs the head; keep it short for main-thread safety.
+    static let fastIntroScan: TimeInterval = 18
 
     // MARK: - Fast path (main-thread safe)
 
-    /// Intro-only, coarse windows. Outro left as full file end until refined.
+    /// Intro-only, slightly coarser windows. Outro left as full file end until refined.
     static func analyzeFast(_ file: AVAudioFile) -> SilenceTrim {
         let meta = fileMeta(file)
         guard meta.duration > 3.0 else { return .full(duration: meta.duration) }
 
-        let windowSec: TimeInterval = 0.12
-        let windowFrames = max(AVAudioFrameCount(meta.sr * windowSec), 1024)
+        let windowSec: TimeInterval = 0.08
+        let windowFrames = max(AVAudioFrameCount(meta.sr * windowSec), 512)
         let introLimit = min(
-            AVAudioFramePosition(min(14, maxIntroScan) * meta.sr),
+            AVAudioFramePosition(min(fastIntroScan, maxIntroScan) * meta.sr),
             meta.totalFrames
         )
 
-        let series = sampleRMSSeries(
+        let series = sampleFrameSeries(
             file: file,
             from: 0,
             to: introLimit,
             windowFrames: windowFrames,
-            channels: meta.channels,
-            strideWindows: 1
+            channels: meta.channels
         )
         guard !series.isEmpty else { return .full(duration: meta.duration) }
 
-        let gate = adaptiveGate(levels: series.map(\.rms))
-        var intro = findIntroSkip(
+        let decision = SilenceDetectionCore.detect(
             series: series,
-            gate: gate,
+            fileDuration: meta.duration,
             windowSec: windowSec,
-            hold: minMusicHold * 0.85,
-            fileDuration: meta.duration
+            minMusicHold: minMusicHold * 0.9,
+            minTrailingQuiet: minTrailingQuiet,
+            outroPad: outroPad,
+            mode: .introOnly,
+            midPeakDB: nil
         )
-        intro = clampIntro(intro, duration: meta.duration)
 
+        var intro = clampIntro(decision.introSkip, duration: meta.duration)
         silenceLog.debug(
-            "fast intro=\(intro, format: .fixed(precision: 2))s gate=\(gate, format: .fixed(precision: 5)) dur=\(meta.duration, format: .fixed(precision: 1))s"
+            "fast v3 intro=\(intro, format: .fixed(precision: 2))s open=\(decision.openGateDB, format: .fixed(precision: 1))dB floor=\(decision.noiseFloorDB, format: .fixed(precision: 1))dB dur=\(meta.duration, format: .fixed(precision: 1))s"
         )
 
         return SilenceTrim(
@@ -117,69 +128,87 @@ enum SilenceAnalyzer {
         let meta = fileMeta(file)
         guard meta.duration > 3.0 else { return .full(duration: meta.duration) }
 
-        let windowSec: TimeInterval = 0.06
-        let windowFrames = max(AVAudioFrameCount(meta.sr * windowSec), 512)
+        let windowSec: TimeInterval = 0.05
+        let windowFrames = max(AVAudioFrameCount(meta.sr * windowSec), 384)
 
         let introLimit = min(AVAudioFramePosition(maxIntroScan * meta.sr), meta.totalFrames)
         let outroSpan = min(AVAudioFramePosition(maxOutroScan * meta.sr), meta.totalFrames)
         let outroStart = max(meta.totalFrames - outroSpan, 0)
 
-        // Combined series for adaptive gate (intro + tail only — not whole file).
-        var introSeries = sampleRMSSeries(
+        let introSeries = sampleFrameSeries(
             file: file,
             from: 0,
             to: introLimit,
             windowFrames: windowFrames,
-            channels: meta.channels,
-            strideWindows: 1
+            channels: meta.channels
         )
-        let outroSeries = sampleRMSSeries(
+        let outroSeries = sampleFrameSeries(
             file: file,
             from: outroStart,
             to: meta.totalFrames,
             windowFrames: windowFrames,
-            channels: meta.channels,
-            strideWindows: 1
+            channels: meta.channels
         )
 
-        let allLevels = introSeries.map(\.rms) + outroSeries.map(\.rms)
-        guard !allLevels.isEmpty else { return .full(duration: meta.duration) }
-        let gate = adaptiveGate(levels: allLevels)
+        // Mid-file peak sample: soft recordings with quiet intros need a true peak
+        // reference so the open gate doesn't sit on noise alone.
+        let midPeakDB = sampleMidPeakDB(
+            file: file,
+            meta: meta,
+            windowFrames: windowFrames,
+            channels: meta.channels
+        )
 
-        var intro = findIntroSkip(
+        guard !introSeries.isEmpty || !outroSeries.isEmpty else {
+            return .full(duration: meta.duration)
+        }
+
+        let introDecision = SilenceDetectionCore.detect(
             series: introSeries,
-            gate: gate,
-            windowSec: windowSec,
-            hold: minMusicHold,
-            fileDuration: meta.duration
-        )
-        intro = clampIntro(intro, duration: meta.duration)
-
-        var end = findEffectiveEnd(
-            series: outroSeries,
-            gate: gate,
-            windowSec: windowSec,
             fileDuration: meta.duration,
+            windowSec: windowSec,
+            minMusicHold: minMusicHold,
+            minTrailingQuiet: minTrailingQuiet,
+            outroPad: outroPad,
+            mode: .introOnly,
+            midPeakDB: midPeakDB,
+            extraLevelsDB: outroSeries.rmsDB
+        )
+
+        let outroDecision = SilenceDetectionCore.detect(
+            series: outroSeries,
+            fileDuration: meta.duration,
+            windowSec: windowSec,
+            minMusicHold: minMusicHold,
+            minTrailingQuiet: minTrailingQuiet,
+            outroPad: outroPad,
+            mode: .outroOnly,
+            midPeakDB: midPeakDB,
+            extraLevelsDB: introSeries.rmsDB,
             regionStartTime: Double(outroStart) / meta.sr
         )
+
+        var intro = clampIntro(introDecision.introSkip, duration: meta.duration)
+        var end = outroDecision.effectiveEnd
 
         // Safety: never crush the playable body.
         let minBody = min(minPlayableBody, meta.duration * 0.45)
         if end - intro < minBody {
-            // Prefer keeping the end; pull intro back if needed.
             if meta.duration - intro < minBody {
                 intro = 0
                 end = meta.duration
             } else {
                 end = min(meta.duration, intro + max(minBody, meta.duration * 0.5))
             }
-            silenceLog.debug("full: body guard → intro=\(intro, format: .fixed(precision: 2)) end=\(end, format: .fixed(precision: 2))")
+            silenceLog.debug(
+                "full v3: body guard → intro=\(intro, format: .fixed(precision: 2)) end=\(end, format: .fixed(precision: 2))"
+            )
         }
 
         end = max(intro + 1.0, min(end, meta.duration))
 
         silenceLog.info(
-            "full intro=\(intro, format: .fixed(precision: 2))s end=\(end, format: .fixed(precision: 2))s gate=\(gate, format: .fixed(precision: 5)) trimmedTail=\(meta.duration - end, format: .fixed(precision: 2))s"
+            "full v3 intro=\(intro, format: .fixed(precision: 2))s end=\(end, format: .fixed(precision: 2))s open=\(introDecision.openGateDB, format: .fixed(precision: 1))dB floor=\(introDecision.noiseFloorDB, format: .fixed(precision: 1))dB trimmedTail=\(meta.duration - end, format: .fixed(precision: 2))s"
         )
 
         return SilenceTrim(
@@ -192,19 +221,13 @@ enum SilenceAnalyzer {
 
     /// Open file and run full analysis (background-safe).
     static func analyzeURL(_ url: URL) -> SilenceTrim? {
-        // Container paths need no scope; external bookmarks do.
         let access = SecurityScopedAccess.startIfNeeded(url)
         defer { SecurityScopedAccess.stopIfNeeded(url, didStart: access) }
         guard let file = try? AVAudioFile(forReading: url) else { return nil }
         return analyze(file)
     }
 
-    // MARK: - Core detection
-
-    private struct RMSPoint {
-        var time: TimeInterval
-        var rms: Float
-    }
+    // MARK: - File helpers
 
     private struct FileMeta {
         var sr: Double
@@ -224,133 +247,72 @@ enum SilenceAnalyzer {
         )
     }
 
-    /// Adaptive gate: blend noise floor (low percentile) with peak.
-    private static func adaptiveGate(levels: [Float]) -> Float {
-        guard !levels.isEmpty else { return 0.002 }
-        let sorted = levels.sorted()
-        let n = sorted.count
-        let p15 = sorted[min(n - 1, max(0, Int(Double(n) * 0.15)))]
-        let p50 = sorted[min(n - 1, max(0, Int(Double(n) * 0.50)))]
-        let peak = sorted[n - 1]
-        // Noise floor estimate; ignore pure zeros.
-        let floor = max(p15, peak * 0.01, 1e-5)
-        // Gate sits between floor and mid energy so soft music still counts,
-        // but room tone / distant chatter usually does not.
-        let gate = max(
-            floor * 3.2,
-            p50 * 0.55,
-            peak * 0.035,
-            0.0006
-        )
-        // Never set gate above 25% of peak or we miss quiet songs.
-        return min(gate, max(peak * 0.25, 0.001))
-    }
-
-    private static func findIntroSkip(
-        series: [RMSPoint],
-        gate: Float,
-        windowSec: TimeInterval,
-        hold: TimeInterval,
-        fileDuration: TimeInterval
-    ) -> TimeInterval {
-        guard !series.isEmpty else { return 0 }
-        var loudRun: TimeInterval = 0
-        var runStart: TimeInterval = 0
-
-        for p in series {
-            if p.rms >= gate {
-                if loudRun <= 0 { runStart = p.time }
-                loudRun += windowSec
-                if loudRun >= hold {
-                    // Nudge slightly before the sustain so attacks aren't clipped.
-                    let skip = max(0, runStart - windowSec * 0.35)
-                    return skip
-                }
-            } else {
-                loudRun = 0
-            }
-        }
-        return 0
-    }
-
     private static func clampIntro(_ intro: TimeInterval, duration: TimeInterval) -> TimeInterval {
         var s = intro
         // Tiny skips aren't worth the discontinuity.
-        if s < 0.40 { return 0 }
+        if s < 0.35 { return 0 }
         let fracCap = duration * maxIntroFraction
         let absCap = min(maxIntroAbsolute, max(0, duration - minPlayableBody))
         s = min(s, fracCap, absCap)
-        if s < 0.40 { return 0 }
+        if s < 0.35 { return 0 }
         return s
     }
 
-    /// Walk the tail: last sustained loud time, only trim if real trailing quiet exists.
-    private static func findEffectiveEnd(
-        series: [RMSPoint],
-        gate: Float,
-        windowSec: TimeInterval,
-        fileDuration: TimeInterval,
-        regionStartTime: TimeInterval
-    ) -> TimeInterval {
-        guard !series.isEmpty else { return fileDuration }
-
-        // Last time energy was clearly "music".
-        var lastLoud = regionStartTime
-        var sawLoud = false
-        for p in series {
-            if p.rms >= gate {
-                lastLoud = p.time + windowSec * 0.5
-                sawLoud = true
+    /// 2–3 short windows around 25% / 50% / 70% for a true-peak hint (not full scan).
+    private static func sampleMidPeakDB(
+        file: AVAudioFile,
+        meta: FileMeta,
+        windowFrames: AVAudioFrameCount,
+        channels: Int
+    ) -> Float? {
+        guard meta.duration > 20 else { return nil }
+        let fractions: [Double] = [0.25, 0.50, 0.70]
+        var peak: Float = -120
+        for f in fractions {
+            let frame = AVAudioFramePosition(Double(meta.totalFrames) * f)
+            let end = min(frame + AVAudioFramePosition(windowFrames) * 4, meta.totalFrames)
+            let series = sampleFrameSeries(
+                file: file,
+                from: frame,
+                to: end,
+                windowFrames: windowFrames,
+                channels: channels
+            )
+            if let m = series.rmsDB.max() {
+                peak = max(peak, m)
             }
         }
-        guard sawLoud else { return fileDuration }
-
-        var effectiveEnd = min(fileDuration, lastLoud + outroPad)
-
-        // How much trailing quiet is there after last loud?
-        let trailing = fileDuration - effectiveEnd
-        // Don't trim tiny tails (natural reverb / soft endings).
-        if trailing < minTrailingQuiet {
-            return fileDuration
-        }
-        // Don't trim almost nothing meaningful.
-        if trailing < 1.0 {
-            return fileDuration
-        }
-        // Sanity: never remove more than maxOutroScan.
-        if fileDuration - effectiveEnd > maxOutroScan {
-            effectiveEnd = fileDuration - maxOutroScan
-        }
-        return max(effectiveEnd, regionStartTime + 1)
+        return peak > -100 ? peak : nil
     }
 
-    // MARK: - RMS sampling
-
-    private static func sampleRMSSeries(
+    private static func sampleFrameSeries(
         file: AVAudioFile,
         from start: AVAudioFramePosition,
         to end: AVAudioFramePosition,
         windowFrames: AVAudioFrameCount,
-        channels: Int,
-        strideWindows: Int
-    ) -> [RMSPoint] {
+        channels: Int
+    ) -> SilenceDetectionCore.FrameSeries {
         let sr = max(file.processingFormat.sampleRate, 1)
-        let step = AVAudioFramePosition(windowFrames) * AVAudioFramePosition(max(strideWindows, 1))
-        var points: [RMSPoint] = []
-        points.reserveCapacity(max(1, Int((end - start) / max(step, 1)) + 2))
+        let step = AVAudioFramePosition(windowFrames)
+        var times: [TimeInterval] = []
+        var levels: [Float] = []
+        let capacity = max(1, Int((end - start) / max(step, 1)) + 2)
+        times.reserveCapacity(capacity)
+        levels.reserveCapacity(capacity)
 
         var pos = max(start, 0)
         let limit = min(end, file.length)
         while pos < limit {
-            if let rms = readRMS(file: file, at: pos, frames: windowFrames, channels: channels) {
-                points.append(RMSPoint(time: Double(pos) / sr, rms: rms))
+            if let db = readRMSDB(file: file, at: pos, frames: windowFrames, channels: channels) {
+                times.append(Double(pos) / sr)
+                levels.append(db)
             }
             pos += step
         }
-        return points
+        return SilenceDetectionCore.FrameSeries(times: times, rmsDB: levels)
     }
 
-    private static func readRMS(
+    private static func readRMSDB(
         file: AVAudioFile,
         at frame: AVAudioFramePosition,
         frames: AVAudioFrameCount,
@@ -373,21 +335,330 @@ enum SilenceAnalyzer {
         guard buffer.frameLength > 0, let ch = buffer.floatChannelData else { return nil }
 
         let count = Int(buffer.frameLength)
+        guard count > 0 else { return nil }
         let chCount = min(channels, Int(file.processingFormat.channelCount))
-        var sum: Float = 0
-        var samples: Float = 0
-        // Stride-2 for speed; plenty for silence detection.
+
+        // Mono energy: mean of per-channel mean-square, then sqrt → RMS → dB.
+        var meanSquare: Float = 0
         for c in 0 ..< chCount {
-            let ptr = ch[c]
-            var i = 0
-            while i < count {
-                let s = ptr[i]
-                sum += s * s
-                samples += 1
-                i += 2
+            var ms: Float = 0
+            vDSP_measqv(ch[c], 1, &ms, vDSP_Length(count))
+            meanSquare += ms
+        }
+        meanSquare /= Float(max(chCount, 1))
+        let rms = sqrt(max(meanSquare, 0))
+        // Floor so log10 stays finite; ~-100 dBFS.
+        let safe = max(rms, 1e-5)
+        return 20 * log10(safe)
+    }
+}
+
+// MARK: - Pure detection core (unit-testable without AVAudioFile)
+
+/// Dual-threshold hysteresis VAD + energy flux on short-time RMS (dB).
+enum SilenceDetectionCore {
+    struct FrameSeries {
+        var times: [TimeInterval]
+        var rmsDB: [Float]
+        var isEmpty: Bool { rmsDB.isEmpty }
+    }
+
+    enum Mode {
+        case introOnly
+        case outroOnly
+        case full
+    }
+
+    struct Decision: Equatable {
+        var introSkip: TimeInterval
+        var effectiveEnd: TimeInterval
+        var noiseFloorDB: Float
+        var openGateDB: Float
+        var holdGateDB: Float
+    }
+
+    /// Public pure entry — feed window times + RMS dB series.
+    static func detect(
+        series: FrameSeries,
+        fileDuration: TimeInterval,
+        windowSec: TimeInterval,
+        minMusicHold: TimeInterval,
+        minTrailingQuiet: TimeInterval,
+        outroPad: TimeInterval,
+        mode: Mode,
+        midPeakDB: Float?,
+        extraLevelsDB: [Float] = [],
+        regionStartTime: TimeInterval = 0
+    ) -> Decision {
+        guard !series.rmsDB.isEmpty, series.times.count == series.rmsDB.count else {
+            return Decision(
+                introSkip: 0,
+                effectiveEnd: fileDuration,
+                noiseFloorDB: -60,
+                openGateDB: -40,
+                holdGateDB: -48
+            )
+        }
+
+        let gates = computeGates(levelsDB: series.rmsDB + extraLevelsDB, midPeakDB: midPeakDB)
+        let flux = energyFlux(series.rmsDB)
+        let openMask = voiceActivityMask(
+            levelsDB: series.rmsDB,
+            flux: flux,
+            openGateDB: gates.open,
+            holdGateDB: gates.hold
+        )
+
+        var intro: TimeInterval = 0
+        var end: TimeInterval = fileDuration
+
+        if mode == .introOnly || mode == .full {
+            intro = findIntroSkip(
+                times: series.times,
+                openMask: openMask,
+                levelsDB: series.rmsDB,
+                windowSec: windowSec,
+                minMusicHold: minMusicHold
+            )
+        }
+
+        if mode == .outroOnly || mode == .full {
+            end = findEffectiveEnd(
+                times: series.times,
+                openMask: openMask,
+                levelsDB: series.rmsDB,
+                windowSec: windowSec,
+                fileDuration: fileDuration,
+                regionStartTime: regionStartTime,
+                minMusicHold: minMusicHold,
+                minTrailingQuiet: minTrailingQuiet,
+                outroPad: outroPad,
+                holdGateDB: gates.hold
+            )
+        }
+
+        return Decision(
+            introSkip: intro,
+            effectiveEnd: end,
+            noiseFloorDB: gates.floor,
+            openGateDB: gates.open,
+            holdGateDB: gates.hold
+        )
+    }
+
+    // MARK: Gates
+
+    struct Gates {
+        var floor: Float
+        var open: Float
+        var hold: Float
+        var peak: Float
+    }
+
+    /// Robust noise floor + dual thresholds in dB.
+    static func computeGates(levelsDB: [Float], midPeakDB: Float?) -> Gates {
+        guard !levelsDB.isEmpty else {
+            return Gates(floor: -60, open: -38, hold: -46, peak: -20)
+        }
+        let sorted = levelsDB.sorted()
+        let n = sorted.count
+        // Low percentiles ≈ ambient / room tone; ignore absolute digital silence.
+        let p10 = sorted[min(n - 1, max(0, Int(Double(n) * 0.10)))]
+        let p20 = sorted[min(n - 1, max(0, Int(Double(n) * 0.20)))]
+        let p50 = sorted[min(n - 1, max(0, Int(Double(n) * 0.50)))]
+        let p90 = sorted[min(n - 1, max(0, Int(Double(n) * 0.90)))]
+        let localPeak = sorted[n - 1]
+        let peak = max(localPeak, midPeakDB ?? localPeak)
+
+        // Floor: blend quiet percentiles; never above median.
+        var floor = max(p10, p20 - 2)
+        floor = min(floor, p50 - 1)
+        // Absolute floors: -90 dBFS min useful, -25 dBFS max "noise" (avoid crushing soft material).
+        floor = min(max(floor, -90), -25)
+
+        // Open gate: clear step above noise, but also relative to peak so soft songs work.
+        // Typical: noise + 10–14 dB, or peak − 28 dB (whichever is higher / more open).
+        let fromFloor = floor + 12
+        let fromPeak = peak - 28
+        let fromP90 = p90 - 8
+        var open = max(fromFloor, min(fromPeak, fromP90))
+        // Keep open between sensible bounds.
+        open = min(max(open, floor + 6), peak - 6)
+        open = min(max(open, -55), -12)
+
+        // Hold gate (hysteresis): once open, stay in music a bit lower so soft passages count.
+        var hold = open - 8
+        hold = max(hold, floor + 3)
+        hold = min(hold, open - 3)
+
+        return Gates(floor: floor, open: open, hold: hold, peak: peak)
+    }
+
+    // MARK: Flux + VAD mask
+
+    /// Positive first difference of dB levels (onset / activity energy).
+    static func energyFlux(_ levelsDB: [Float]) -> [Float] {
+        guard levelsDB.count > 1 else { return Array(repeating: 0, count: levelsDB.count) }
+        var flux = [Float](repeating: 0, count: levelsDB.count)
+        for i in 1 ..< levelsDB.count {
+            let d = levelsDB[i] - levelsDB[i - 1]
+            flux[i] = max(0, d)
+        }
+        // 3-tap smooth
+        if flux.count >= 3 {
+            var smooth = flux
+            for i in 1 ..< (flux.count - 1) {
+                smooth[i] = (flux[i - 1] + flux[i] * 2 + flux[i + 1]) * 0.25
+            }
+            return smooth
+        }
+        return flux
+    }
+
+    /// Hysteresis VAD: open above high gate (or strong flux into mid gate), hold above low gate.
+    static func voiceActivityMask(
+        levelsDB: [Float],
+        flux: [Float],
+        openGateDB: Float,
+        holdGateDB: Float
+    ) -> [Bool] {
+        let n = levelsDB.count
+        guard n > 0 else { return [] }
+        var mask = [Bool](repeating: false, count: n)
+        var active = false
+        // Flux open assist: sudden +6 dB jump into the hold band often starts music.
+        let fluxOpen: Float = 5.5
+
+        for i in 0 ..< n {
+            let level = levelsDB[i]
+            let f = i < flux.count ? flux[i] : 0
+            if active {
+                if level >= holdGateDB {
+                    mask[i] = true
+                } else {
+                    active = false
+                    mask[i] = false
+                }
+            } else {
+                let strong = level >= openGateDB
+                let attack = level >= holdGateDB && f >= fluxOpen
+                if strong || attack {
+                    active = true
+                    mask[i] = true
+                }
             }
         }
-        guard samples > 0 else { return nil }
-        return sqrt(sum / samples)
+        return mask
+    }
+
+    // MARK: Intro / outro
+
+    static func findIntroSkip(
+        times: [TimeInterval],
+        openMask: [Bool],
+        levelsDB: [Float],
+        windowSec: TimeInterval,
+        minMusicHold: TimeInterval
+    ) -> TimeInterval {
+        let n = min(times.count, openMask.count)
+        guard n > 0 else { return 0 }
+
+        var run: TimeInterval = 0
+        var runStartIdx = 0
+
+        for i in 0 ..< n {
+            if openMask[i] {
+                if run <= 0 { runStartIdx = i }
+                run += windowSec
+                if run >= minMusicHold {
+                    // Nudge slightly before the sustained open so attacks aren't clipped.
+                    let t = times[runStartIdx]
+                    let pad = min(windowSec * 0.6, 0.12)
+                    return max(0, t - pad)
+                }
+            } else {
+                // Allow one-window dropouts inside a forming run (live mic blips).
+                if run > 0, run < minMusicHold, i + 1 < n, openMask[i + 1] {
+                    run += windowSec * 0.5
+                    continue
+                }
+                run = 0
+            }
+        }
+        return 0
+    }
+
+    static func findEffectiveEnd(
+        times: [TimeInterval],
+        openMask: [Bool],
+        levelsDB: [Float],
+        windowSec: TimeInterval,
+        fileDuration: TimeInterval,
+        regionStartTime: TimeInterval,
+        minMusicHold: TimeInterval,
+        minTrailingQuiet: TimeInterval,
+        outroPad: TimeInterval,
+        holdGateDB: Float
+    ) -> TimeInterval {
+        let n = min(times.count, openMask.count)
+        guard n > 0 else { return fileDuration }
+
+        // Find last sustained music run (length >= minMusicHold), not single spikes.
+        var lastMusicEnd: TimeInterval?
+        var run: TimeInterval = 0
+        var runEnd: TimeInterval = regionStartTime
+
+        for i in 0 ..< n {
+            let tEnd = times[i] + windowSec * 0.5
+            if openMask[i] || levelsDB[i] >= holdGateDB {
+                run += windowSec
+                runEnd = tEnd
+                if run >= minMusicHold {
+                    lastMusicEnd = runEnd
+                }
+            } else {
+                run = 0
+            }
+        }
+
+        guard let musicEnd = lastMusicEnd else { return fileDuration }
+
+        var effectiveEnd = min(fileDuration, musicEnd + outroPad)
+
+        // Trailing quiet confirmation: energy must stay below hold for long enough,
+        // or we keep the true file end (soft fade / live reverb still going).
+        let trailing = fileDuration - effectiveEnd
+        if trailing < minTrailingQuiet {
+            return fileDuration
+        }
+
+        // Verify the last portion is actually quiet (not continuous soft music we missed).
+        var quietRun: TimeInterval = 0
+        var sawQuiet = false
+        for i in 0 ..< n {
+            let t = times[i]
+            guard t >= musicEnd else { continue }
+            if levelsDB[i] < holdGateDB - 1 {
+                quietRun += windowSec
+                if quietRun >= minTrailingQuiet * 0.75 {
+                    sawQuiet = true
+                    break
+                }
+            } else {
+                quietRun = 0
+            }
+        }
+        if !sawQuiet {
+            // Still trim if there's a large trailing span after last music (dead air).
+            if trailing < minTrailingQuiet * 1.5 {
+                return fileDuration
+            }
+        }
+
+        // Sanity: never remove more than the scanned tail window implies.
+        if fileDuration - effectiveEnd > 90 {
+            effectiveEnd = fileDuration - 90
+        }
+        return max(effectiveEnd, regionStartTime + 1)
     }
 }
