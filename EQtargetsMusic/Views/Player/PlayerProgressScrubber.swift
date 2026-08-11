@@ -147,8 +147,8 @@ struct PlayerProgressScrubber: View {
     private var edgeRail: some View {
         GeometryReader { geo in
             let width = max(geo.size.width, 1)
-            // Mini uses 2pt; scrub expands slightly under finger so position is clear.
-            let railH: CGFloat = isScrubbing ? 4 : 2.5
+            // A touch taller than the mini chin so the full-player rail feels soft, not a hairline.
+            let railH: CGFloat = isScrubbing ? 7 : 5
             let fill = width * progress
             let y = geo.size.height * 0.5
 

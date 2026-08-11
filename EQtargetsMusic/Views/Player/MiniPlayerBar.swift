@@ -33,8 +33,8 @@ struct MiniPlayerBar: View {
     private static let artCorner: CGFloat = 12
     private static let hPad: CGFloat = 10
     private static let controlW: CGFloat = 44
-    /// Apple Music–style edge rail: thin, flush to the capsule chin.
-    private static let progressH: CGFloat = 2
+    /// Edge rail on the mini chin — a little taller so it doesn’t read as a hairline.
+    private static let progressH: CGFloat = 3.5
 
     private var isDark: Bool { scheme == .dark }
 
