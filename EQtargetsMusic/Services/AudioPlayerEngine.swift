@@ -1995,7 +1995,7 @@ extension AudioPlayerEngine {
         #if DEBUG
         if !unitBypass {
             playerLog.debug(
-                "Bass \(self.bass.style.rawValue, privacy: .public): str=\(self.bass.strength, format: .fixed(precision: 2)) fc=\(self.bass.cutoff, format: .fixed(precision: 0))Hz post=\(self.bass.postGain, format: .fixed(precision: 1))dB"
+                "Bass \(self.bass.style.rawValue, privacy: .public): str=\(self.bass.strength, format: .fixed(precision: 2)) fc=\(self.bass.cutoff, format: .fixed(precision: 0))Hz post=\(self.bass.postGain, format: .fixed(precision: 1))dB global=\(params.globalGain, format: .fixed(precision: 2))dB ceiling=\(BassProcessorDSP.peakCeilingDB, format: .fixed(precision: 1))dB"
             )
         }
         #endif
