@@ -802,7 +802,15 @@ struct HamburgerMenuSheet: View {
 
     private var crossfadeSubtitle: String {
         if !player.crossfade.isEnabled { return "Off · hard cuts between tracks" }
-        var parts = ["\(player.crossfade.durationSeconds)s", player.crossfade.curve.title]
+        let plan = player.upcomingCrossfadePlan
+        // Lead with what the next transition will really do, not just the request.
+        let head: String
+        if plan.durationWasReduced {
+            head = String(format: "%.1fs (set %ds)", plan.effective, player.crossfade.durationSeconds)
+        } else {
+            head = "\(player.crossfade.durationSeconds)s"
+        }
+        var parts = [head, plan.isEnabled ? plan.curve.title : player.crossfade.curve.title]
         if player.crossfade.skipSilence { parts.append("skip silence") }
         if player.crossfade.adaptiveBPM { parts.append("smart tempo") }
         return parts.joined(separator: " · ")

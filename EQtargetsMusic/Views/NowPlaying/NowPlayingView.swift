@@ -383,6 +383,41 @@ struct AutoMixSettingsSheet: View {
                             }
                         }
 
+                        // What the next transition will actually do. Shown only when it
+                        // differs from the request — caps, adaptive tempo, or the
+                        // long-fade curve substitution.
+                        if player.crossfade.isEnabled {
+                            let plan = player.upcomingCrossfadePlan
+                            if let adjusted = plan.adjustmentSummary {
+                                HStack(alignment: .top, spacing: 8) {
+                                    Image(systemName: "info.circle.fill")
+                                        .font(.app(size: 12, weight: .semibold))
+                                        .foregroundStyle(theme.accentSecondary)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("Next blend: \(adjusted)")
+                                            .font(.app(size: 12, weight: .semibold, design: .rounded))
+                                            .foregroundStyle(theme.primaryText)
+                                        if let reason = plan.adjustmentReason {
+                                            Text(reason)
+                                                .font(.app(size: 11, weight: .medium, design: .rounded))
+                                                .foregroundStyle(theme.secondaryText)
+                                        }
+                                    }
+                                    Spacer(minLength: 0)
+                                }
+                                .padding(10)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                        .fill(theme.elevated)
+                                )
+                                .accessibilityElement(children: .combine)
+                                .accessibilityLabel(
+                                    "Next blend \(adjusted)"
+                                        + (plan.adjustmentReason.map { ", \($0)" } ?? "")
+                                )
+                            }
+                        }
+
                         VStack(alignment: .leading, spacing: 6) {
                             curveHelpRow(title: "Equal Power", body: "Default. Constant loudness through the middle of the blend (cos/sin). Best everyday choice.")
                             curveHelpRow(title: "Smooth", body: "Softer start and end of the fade. Nice on long overlaps (15–60s). Auto-used for long Equal Power fades.")

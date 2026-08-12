@@ -2510,6 +2510,15 @@ extension AudioPlayerEngine {
         )
     }
 
+    /// Plan for the next natural transition, for the settings UI.
+    ///
+    /// The blend controls show what was *requested*; caps, adaptive tempo, and the
+    /// long-fade curve substitution can all make the real fade differ. Surfacing
+    /// this is what keeps "30s Equal Power" from quietly meaning "16.5s Smooth".
+    var upcomingCrossfadePlan: CrossfadePlan {
+        peekCrossfadePlan(remaining: nil)
+    }
+
     /// Estimate fade plan for the upcoming natural transition (queue peek).
     private func peekCrossfadePlan(remaining: TimeInterval?) -> CrossfadePlan {
         let next = peekNextTrack()
