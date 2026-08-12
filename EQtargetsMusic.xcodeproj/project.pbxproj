@@ -1,31 +1,30 @@
 // !$*UTF8*$!
 {
 	archiveVersion = 1;
-	classes = {};
+	classes = {
+	};
 	objectVersion = 56;
 	objects = {
 
 /* Begin PBXBuildFile section */
 		000000000000000000001002 /* EQtargetsMusicApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000001001 /* EQtargetsMusicApp.swift */; };
 		000000000000000000001004 /* EQModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000001003 /* EQModels.swift */; };
-		000000000000000000001056 /* BassProcessor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000001055 /* BassProcessor.swift */; };
-		000000000000000000001058 /* LimiterProcessor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000001057 /* LimiterProcessor.swift */; };
 		000000000000000000001006 /* Track.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000001005 /* Track.swift */; };
 		000000000000000000001008 /* AudioPlayerEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000001007 /* AudioPlayerEngine.swift */; };
 		00000000000000000000100A /* LibraryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000001009 /* LibraryStore.swift */; };
-		00000000000000000000102E /* BPMDetector.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000102D /* BPMDetector.swift */; };
-		000000000000000000001030 /* ArtworkImageCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000102F /* ArtworkImageCache.swift */; };
-		000000000000000000001032 /* BangerShuffle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000001031 /* BangerShuffle.swift */; };
-		000000000000000000001034 /* CrossfadeEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000001033 /* CrossfadeEngine.swift */; };
-		000000000000000000001036 /* SilenceAnalyzer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000001035 /* SilenceAnalyzer.swift */; };
 		00000000000000000000100C /* GrokTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000100B /* GrokTheme.swift */; };
-		000000000000000000001052 /* AppSurfaceColors.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000001051 /* AppSurfaceColors.swift */; };
 		00000000000000000000100E /* TrackRowView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000100D /* TrackRowView.swift */; };
 		000000000000000000001010 /* EQControlsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000100F /* EQControlsView.swift */; };
 		000000000000000000001012 /* EQGraphView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000001011 /* EQGraphView.swift */; };
 		000000000000000000001014 /* MusicLibraryViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000001013 /* MusicLibraryViews.swift */; };
 		000000000000000000001016 /* NowPlayingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000001015 /* NowPlayingView.swift */; };
 		000000000000000000001018 /* RootTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000001017 /* RootTabView.swift */; };
+		00000000000000000000101A /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 000000000000000000001019 /* Assets.xcassets */; };
+		00000000000000000000102E /* BPMDetector.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000102D /* BPMDetector.swift */; };
+		000000000000000000001030 /* ArtworkImageCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000102F /* ArtworkImageCache.swift */; };
+		000000000000000000001032 /* BangerShuffle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000001031 /* BangerShuffle.swift */; };
+		000000000000000000001034 /* CrossfadeEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000001033 /* CrossfadeEngine.swift */; };
+		000000000000000000001036 /* SilenceAnalyzer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000001035 /* SilenceAnalyzer.swift */; };
 		000000000000000000001038 /* PlayerSurfaceState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000001037 /* PlayerSurfaceState.swift */; };
 		00000000000000000000103A /* MiniPlayerBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000001039 /* MiniPlayerBar.swift */; };
 		00000000000000000000103C /* ImmersivePlayerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000103B /* ImmersivePlayerView.swift */; };
@@ -35,35 +34,53 @@
 		000000000000000000001044 /* PlayerArtworkVisualCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000001043 /* PlayerArtworkVisualCache.swift */; };
 		000000000000000000001046 /* PlayerProgressScrubber.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000001045 /* PlayerProgressScrubber.swift */; };
 		000000000000000000001048 /* SmartShuffleSelector.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000001047 /* SmartShuffleSelector.swift */; };
+		00000000000000000000104A /* ShuffleDiversity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000001049 /* ShuffleDiversity.swift */; };
 		00000000000000000000104C /* TempoFeel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000104B /* TempoFeel.swift */; };
 		00000000000000000000104E /* InterVariable.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000104D /* InterVariable.ttf */; };
 		000000000000000000001050 /* AppTypography.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000104F /* AppTypography.swift */; };
-		00000000000000000000104A /* ShuffleDiversity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000001049 /* ShuffleDiversity.swift */; };
+		000000000000000000001052 /* AppSurfaceColors.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000001051 /* AppSurfaceColors.swift */; };
 		000000000000000000001054 /* PerformanceMemory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000001053 /* PerformanceMemory.swift */; };
-		00000000000000000000101A /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 000000000000000000001019 /* Assets.xcassets */; };
+		000000000000000000001056 /* BassProcessor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000001055 /* BassProcessor.swift */; };
+		000000000000000000001058 /* LimiterProcessor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000001057 /* LimiterProcessor.swift */; };
+		1D31AEA581D0BCD27D70966E /* CrossfadePlanTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52E30647C268D6EDADD4B99E /* CrossfadePlanTests.swift */; };
+		2FAC8AA3B43D923BC0C2B0D5 /* ShuffleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 60721378C8CEA7AF17B73407 /* ShuffleTests.swift */; };
+		3A3484E3A04C4257560C5C28 /* AutoEQParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 419241831B539D28C73DF10F /* AutoEQParserTests.swift */; };
+		51FCB629BD3F34F3A246F6B5 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 8158230D18CCFB4D47BEEEAA /* Foundation.framework */; };
+		BBB633C75B55428219B9D5F3 /* TestFixtures.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B82E3FE5CA8E89C8E7F2222 /* TestFixtures.swift */; };
+		D31256F3B392230381580B1E /* BassProcessorDSPTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 37835659118141871C838D90 /* BassProcessorDSPTests.swift */; };
 /* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		67EEDADBE8958456F0B4508C /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 00000000000000000000101E /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 00000000000000000000101D;
+			remoteInfo = EQtargetsMusic;
+		};
+/* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
 		000000000000000000001001 /* EQtargetsMusicApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = EQtargetsMusicApp.swift; path = App/EQtargetsMusicApp.swift; sourceTree = "<group>"; };
 		000000000000000000001003 /* EQModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = EQModels.swift; path = Models/EQModels.swift; sourceTree = "<group>"; };
-		000000000000000000001055 /* BassProcessor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = BassProcessor.swift; path = Models/BassProcessor.swift; sourceTree = "<group>"; };
-		000000000000000000001057 /* LimiterProcessor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = LimiterProcessor.swift; path = Models/LimiterProcessor.swift; sourceTree = "<group>"; };
 		000000000000000000001005 /* Track.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = Track.swift; path = Models/Track.swift; sourceTree = "<group>"; };
 		000000000000000000001007 /* AudioPlayerEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AudioPlayerEngine.swift; path = Services/AudioPlayerEngine.swift; sourceTree = "<group>"; };
 		000000000000000000001009 /* LibraryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = LibraryStore.swift; path = Services/LibraryStore.swift; sourceTree = "<group>"; };
-		00000000000000000000102D /* BPMDetector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = BPMDetector.swift; path = Services/BPMDetector.swift; sourceTree = "<group>"; };
-		00000000000000000000102F /* ArtworkImageCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ArtworkImageCache.swift; path = Services/ArtworkImageCache.swift; sourceTree = "<group>"; };
-		000000000000000000001031 /* BangerShuffle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = BangerShuffle.swift; path = Services/BangerShuffle.swift; sourceTree = "<group>"; };
-		000000000000000000001033 /* CrossfadeEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = CrossfadeEngine.swift; path = Services/CrossfadeEngine.swift; sourceTree = "<group>"; };
-		000000000000000000001035 /* SilenceAnalyzer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SilenceAnalyzer.swift; path = Services/SilenceAnalyzer.swift; sourceTree = "<group>"; };
 		00000000000000000000100B /* GrokTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = GrokTheme.swift; path = Theme/GrokTheme.swift; sourceTree = "<group>"; };
-		000000000000000000001051 /* AppSurfaceColors.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppSurfaceColors.swift; path = Theme/AppSurfaceColors.swift; sourceTree = "<group>"; };
 		00000000000000000000100D /* TrackRowView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = TrackRowView.swift; path = Views/Components/TrackRowView.swift; sourceTree = "<group>"; };
 		00000000000000000000100F /* EQControlsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = EQControlsView.swift; path = Views/EQ/EQControlsView.swift; sourceTree = "<group>"; };
 		000000000000000000001011 /* EQGraphView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = EQGraphView.swift; path = Views/EQ/EQGraphView.swift; sourceTree = "<group>"; };
 		000000000000000000001013 /* MusicLibraryViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = MusicLibraryViews.swift; path = Views/Library/MusicLibraryViews.swift; sourceTree = "<group>"; };
 		000000000000000000001015 /* NowPlayingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = NowPlayingView.swift; path = Views/NowPlaying/NowPlayingView.swift; sourceTree = "<group>"; };
 		000000000000000000001017 /* RootTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = RootTabView.swift; path = Views/Root/RootTabView.swift; sourceTree = "<group>"; };
+		000000000000000000001019 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		00000000000000000000101B /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		00000000000000000000101C /* EQtargetsMusic.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = EQtargetsMusic.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		00000000000000000000102D /* BPMDetector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = BPMDetector.swift; path = Services/BPMDetector.swift; sourceTree = "<group>"; };
+		00000000000000000000102F /* ArtworkImageCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ArtworkImageCache.swift; path = Services/ArtworkImageCache.swift; sourceTree = "<group>"; };
+		000000000000000000001031 /* BangerShuffle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = BangerShuffle.swift; path = Services/BangerShuffle.swift; sourceTree = "<group>"; };
+		000000000000000000001033 /* CrossfadeEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = CrossfadeEngine.swift; path = Services/CrossfadeEngine.swift; sourceTree = "<group>"; };
+		000000000000000000001035 /* SilenceAnalyzer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SilenceAnalyzer.swift; path = Services/SilenceAnalyzer.swift; sourceTree = "<group>"; };
 		000000000000000000001037 /* PlayerSurfaceState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PlayerSurfaceState.swift; path = Views/Player/PlayerSurfaceState.swift; sourceTree = "<group>"; };
 		000000000000000000001039 /* MiniPlayerBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = MiniPlayerBar.swift; path = Views/Player/MiniPlayerBar.swift; sourceTree = "<group>"; };
 		00000000000000000000103B /* ImmersivePlayerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ImmersivePlayerView.swift; path = Views/Player/ImmersivePlayerView.swift; sourceTree = "<group>"; };
@@ -73,37 +90,131 @@
 		000000000000000000001043 /* PlayerArtworkVisualCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PlayerArtworkVisualCache.swift; path = Views/Player/PlayerArtworkVisualCache.swift; sourceTree = "<group>"; };
 		000000000000000000001045 /* PlayerProgressScrubber.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PlayerProgressScrubber.swift; path = Views/Player/PlayerProgressScrubber.swift; sourceTree = "<group>"; };
 		000000000000000000001047 /* SmartShuffleSelector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SmartShuffleSelector.swift; path = Services/SmartShuffleSelector.swift; sourceTree = "<group>"; };
+		000000000000000000001049 /* ShuffleDiversity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ShuffleDiversity.swift; path = Services/ShuffleDiversity.swift; sourceTree = "<group>"; };
 		00000000000000000000104B /* TempoFeel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = TempoFeel.swift; path = Services/TempoFeel.swift; sourceTree = "<group>"; };
 		00000000000000000000104D /* InterVariable.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; name = InterVariable.ttf; path = Resources/Fonts/InterVariable.ttf; sourceTree = "<group>"; };
 		00000000000000000000104F /* AppTypography.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppTypography.swift; path = Theme/AppTypography.swift; sourceTree = "<group>"; };
-		000000000000000000001049 /* ShuffleDiversity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ShuffleDiversity.swift; path = Services/ShuffleDiversity.swift; sourceTree = "<group>"; };
+		000000000000000000001051 /* AppSurfaceColors.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppSurfaceColors.swift; path = Theme/AppSurfaceColors.swift; sourceTree = "<group>"; };
 		000000000000000000001053 /* PerformanceMemory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PerformanceMemory.swift; path = Services/PerformanceMemory.swift; sourceTree = "<group>"; };
-		000000000000000000001019 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
-		00000000000000000000101B /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
-		00000000000000000000101C /* EQtargetsMusic.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = EQtargetsMusic.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		000000000000000000001055 /* BassProcessor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = BassProcessor.swift; path = Models/BassProcessor.swift; sourceTree = "<group>"; };
+		000000000000000000001057 /* LimiterProcessor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = LimiterProcessor.swift; path = Models/LimiterProcessor.swift; sourceTree = "<group>"; };
+		1B82E3FE5CA8E89C8E7F2222 /* TestFixtures.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = TestFixtures.swift; sourceTree = "<group>"; };
+		1B8C6A4A8B286D297A4480E2 /* EQtargetsMusicTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = EQtargetsMusicTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		37835659118141871C838D90 /* BassProcessorDSPTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = BassProcessorDSPTests.swift; sourceTree = "<group>"; };
+		419241831B539D28C73DF10F /* AutoEQParserTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AutoEQParserTests.swift; sourceTree = "<group>"; };
+		52E30647C268D6EDADD4B99E /* CrossfadePlanTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CrossfadePlanTests.swift; sourceTree = "<group>"; };
+		60721378C8CEA7AF17B73407 /* ShuffleTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ShuffleTests.swift; sourceTree = "<group>"; };
+		8158230D18CCFB4D47BEEEAA /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS18.0.sdk/System/Library/Frameworks/Foundation.framework; sourceTree = DEVELOPER_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		000000000000000000001021 /* Frameworks */ = {
-			isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0;
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		BF0A41F0B0B3281D9CE4B8CD /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				51FCB629BD3F34F3A246F6B5 /* Foundation.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
 		000000000000000000001022 = {
 			isa = PBXGroup;
-			children = (000000000000000000001024 /* EQtargetsMusic */, 000000000000000000001023 /* Products */,);
+			children = (
+				000000000000000000001024 /* EQtargetsMusic */,
+				000000000000000000001023 /* Products */,
+				2FDE95CB5F57A363492DE22B /* Frameworks */,
+				47C4977E53DAC80D21CE9EFE /* EQtargetsMusicTests */,
+			);
 			sourceTree = "<group>";
 		};
 		000000000000000000001023 /* Products */ = {
 			isa = PBXGroup;
-			children = (00000000000000000000101C /* EQtargetsMusic.app */,);
-			name = Products; sourceTree = "<group>";
+			children = (
+				00000000000000000000101C /* EQtargetsMusic.app */,
+				1B8C6A4A8B286D297A4480E2 /* EQtargetsMusicTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
 		};
 		000000000000000000001024 /* EQtargetsMusic */ = {
 			isa = PBXGroup;
-			children = (000000000000000000001001 /* EQtargetsMusicApp.swift */, 000000000000000000001003 /* EQModels.swift */, 000000000000000000001055 /* BassProcessor.swift */, 000000000000000000001057 /* LimiterProcessor.swift */, 000000000000000000001005 /* Track.swift */, 000000000000000000001007 /* AudioPlayerEngine.swift */, 000000000000000000001009 /* LibraryStore.swift */, 00000000000000000000102D /* BPMDetector.swift */, 00000000000000000000102F /* ArtworkImageCache.swift */, 000000000000000000001053 /* PerformanceMemory.swift */, 000000000000000000001031 /* BangerShuffle.swift */, 000000000000000000001049 /* ShuffleDiversity.swift */, 000000000000000000001033 /* CrossfadeEngine.swift */, 000000000000000000001035 /* SilenceAnalyzer.swift */, 000000000000000000001047 /* SmartShuffleSelector.swift */, 00000000000000000000104B /* TempoFeel.swift */, 00000000000000000000100B /* GrokTheme.swift */, 000000000000000000001051 /* AppSurfaceColors.swift */, 00000000000000000000104F /* AppTypography.swift */, 00000000000000000000100D /* TrackRowView.swift */, 00000000000000000000100F /* EQControlsView.swift */, 000000000000000000001011 /* EQGraphView.swift */, 000000000000000000001013 /* MusicLibraryViews.swift */, 000000000000000000001015 /* NowPlayingView.swift */, 000000000000000000001037 /* PlayerSurfaceState.swift */, 000000000000000000001039 /* MiniPlayerBar.swift */, 000000000000000000001041 /* MiniPlayerArtFrameKey.swift */, 000000000000000000001043 /* PlayerArtworkVisualCache.swift */, 000000000000000000001045 /* PlayerProgressScrubber.swift */, 00000000000000000000103B /* ImmersivePlayerView.swift */, 00000000000000000000103D /* QueueSheet.swift */, 00000000000000000000103F /* TabBarHeightReader.swift */, 000000000000000000001017 /* RootTabView.swift */, 000000000000000000001019 /* Assets.xcassets */, 00000000000000000000104D /* InterVariable.ttf */, 00000000000000000000101B /* Info.plist */,);
+			children = (
+				000000000000000000001001 /* EQtargetsMusicApp.swift */,
+				000000000000000000001003 /* EQModels.swift */,
+				000000000000000000001055 /* BassProcessor.swift */,
+				000000000000000000001057 /* LimiterProcessor.swift */,
+				000000000000000000001005 /* Track.swift */,
+				000000000000000000001007 /* AudioPlayerEngine.swift */,
+				000000000000000000001009 /* LibraryStore.swift */,
+				00000000000000000000102D /* BPMDetector.swift */,
+				00000000000000000000102F /* ArtworkImageCache.swift */,
+				000000000000000000001053 /* PerformanceMemory.swift */,
+				000000000000000000001031 /* BangerShuffle.swift */,
+				000000000000000000001049 /* ShuffleDiversity.swift */,
+				000000000000000000001033 /* CrossfadeEngine.swift */,
+				000000000000000000001035 /* SilenceAnalyzer.swift */,
+				000000000000000000001047 /* SmartShuffleSelector.swift */,
+				00000000000000000000104B /* TempoFeel.swift */,
+				00000000000000000000100B /* GrokTheme.swift */,
+				000000000000000000001051 /* AppSurfaceColors.swift */,
+				00000000000000000000104F /* AppTypography.swift */,
+				00000000000000000000100D /* TrackRowView.swift */,
+				00000000000000000000100F /* EQControlsView.swift */,
+				000000000000000000001011 /* EQGraphView.swift */,
+				000000000000000000001013 /* MusicLibraryViews.swift */,
+				000000000000000000001015 /* NowPlayingView.swift */,
+				000000000000000000001037 /* PlayerSurfaceState.swift */,
+				000000000000000000001039 /* MiniPlayerBar.swift */,
+				000000000000000000001041 /* MiniPlayerArtFrameKey.swift */,
+				000000000000000000001043 /* PlayerArtworkVisualCache.swift */,
+				000000000000000000001045 /* PlayerProgressScrubber.swift */,
+				00000000000000000000103B /* ImmersivePlayerView.swift */,
+				00000000000000000000103D /* QueueSheet.swift */,
+				00000000000000000000103F /* TabBarHeightReader.swift */,
+				000000000000000000001017 /* RootTabView.swift */,
+				000000000000000000001019 /* Assets.xcassets */,
+				00000000000000000000104D /* InterVariable.ttf */,
+				00000000000000000000101B /* Info.plist */,
+			);
 			path = EQtargetsMusic;
+			sourceTree = "<group>";
+		};
+		2FDE95CB5F57A363492DE22B /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				C4F7DF29B1C7EE1CF7908F9B /* iOS */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		47C4977E53DAC80D21CE9EFE /* EQtargetsMusicTests */ = {
+			isa = PBXGroup;
+			children = (
+				419241831B539D28C73DF10F /* AutoEQParserTests.swift */,
+				37835659118141871C838D90 /* BassProcessorDSPTests.swift */,
+				52E30647C268D6EDADD4B99E /* CrossfadePlanTests.swift */,
+				60721378C8CEA7AF17B73407 /* ShuffleTests.swift */,
+				1B82E3FE5CA8E89C8E7F2222 /* TestFixtures.swift */,
+			);
+			name = EQtargetsMusicTests;
+			path = EQtargetsMusicTests;
+			sourceTree = "<group>";
+		};
+		C4F7DF29B1C7EE1CF7908F9B /* iOS */ = {
+			isa = PBXGroup;
+			children = (
+				8158230D18CCFB4D47BEEEAA /* Foundation.framework */,
+			);
+			name = iOS;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -112,44 +223,90 @@
 		00000000000000000000101D /* EQtargetsMusic */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 000000000000000000001026 /* Build configuration list for PBXNativeTarget "EQtargetsMusic" */;
-			buildPhases = (00000000000000000000101F /* Sources */, 000000000000000000001021 /* Frameworks */, 000000000000000000001020 /* Resources */,);
-			buildRules = ();
-			dependencies = ();
+			buildPhases = (
+				00000000000000000000101F /* Sources */,
+				000000000000000000001021 /* Frameworks */,
+				000000000000000000001020 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
 			name = EQtargetsMusic;
 			productName = EQtargetsMusic;
 			productReference = 00000000000000000000101C /* EQtargetsMusic.app */;
 			productType = "com.apple.product-type.application";
+		};
+		4D1DDD670CF08D68E1995DE5 /* EQtargetsMusicTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = E44DB68517F16A220E9AE145 /* Build configuration list for PBXNativeTarget "EQtargetsMusicTests" */;
+			buildPhases = (
+				96906C6B4B2905901216558C /* Sources */,
+				BF0A41F0B0B3281D9CE4B8CD /* Frameworks */,
+				D6B698C664DC65C3AEB5AA9F /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				B5A3832AFAB4CDB16CBDFA2A /* PBXTargetDependency */,
+			);
+			name = EQtargetsMusicTests;
+			productName = EQtargetsMusicTests;
+			productReference = 1B8C6A4A8B286D297A4480E2 /* EQtargetsMusicTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
 		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
 		00000000000000000000101E /* Project object */ = {
 			isa = PBXProject;
-			attributes = { BuildIndependentTargetsInParallel = 1; LastSwiftUpdateCheck = 1600; LastUpgradeCheck = 1600; };
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1600;
+				LastUpgradeCheck = 1600;
+			};
 			buildConfigurationList = 000000000000000000001025 /* Build configuration list for PBXProject "EQtargetsMusic" */;
 			compatibilityVersion = "Xcode 14.0";
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
-			knownRegions = (en, Base,);
+			knownRegions = (
+				en,
+				Base,
+			);
 			mainGroup = 000000000000000000001022;
 			productRefGroup = 000000000000000000001023 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
-			targets = (00000000000000000000101D /* EQtargetsMusic */,);
+			targets = (
+				00000000000000000000101D /* EQtargetsMusic */,
+				4D1DDD670CF08D68E1995DE5 /* EQtargetsMusicTests */,
+			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
 		000000000000000000001020 /* Resources */ = {
-			isa = PBXResourcesBuildPhase; buildActionMask = 2147483647;
-			files = (00000000000000000000101A /* Assets.xcassets in Resources */, 00000000000000000000104E /* InterVariable.ttf in Resources */,);
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				00000000000000000000101A /* Assets.xcassets in Resources */,
+				00000000000000000000104E /* InterVariable.ttf in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D6B698C664DC65C3AEB5AA9F /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		00000000000000000000101F /* Sources */ = {
-			isa = PBXSourcesBuildPhase; buildActionMask = 2147483647;
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
 			files = (
 				000000000000000000001002 /* EQtargetsMusicApp.swift in Sources */,
 				000000000000000000001004 /* EQModels.swift in Sources */,
@@ -187,7 +344,28 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		96906C6B4B2905901216558C /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				3A3484E3A04C4257560C5C28 /* AutoEQParserTests.swift in Sources */,
+				D31256F3B392230381580B1E /* BassProcessorDSPTests.swift in Sources */,
+				1D31AEA581D0BCD27D70966E /* CrossfadePlanTests.swift in Sources */,
+				2FAC8AA3B43D923BC0C2B0D5 /* ShuffleTests.swift in Sources */,
+				BBB633C75B55428219B9D5F3 /* TestFixtures.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		B5A3832AFAB4CDB16CBDFA2A /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = EQtargetsMusic;
+			target = 00000000000000000000101D /* EQtargetsMusic */;
+			targetProxy = 67EEDADBE8958456F0B4508C /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		000000000000000000001027 /* Debug */ = {
@@ -195,29 +373,29 @@
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ENABLE_MODULES = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
-				SDKROOT = iphoneos;
-				ONLY_ACTIVE_ARCH = YES;
-				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
-				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_TESTABILITY = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 			};
 			name = Debug;
-			};
+		};
 		000000000000000000001028 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ENABLE_MODULES = YES;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				SDKROOT = iphoneos;
-				SWIFT_OPTIMIZATION_LEVEL = "-O";
 				SWIFT_COMPILATION_MODE = wholemodule;
-				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
 			};
 			name = Release;
-			};
+		};
 		000000000000000000001029 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -252,7 +430,7 @@
 				VALIDATE_PRODUCT = NO;
 			};
 			name = Debug;
-			};
+		};
 		00000000000000000000102A /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -296,15 +474,73 @@
 				VALIDATE_PRODUCT = YES;
 			};
 			name = Release;
+		};
+		14FA21BCE2828D9A7E1F337B /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = RV23UF9649;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.eqtargets.music.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/EQtargetsMusic.app/EQtargetsMusic";
+				VALIDATE_PRODUCT = YES;
 			};
+			name = Release;
+		};
+		2797E681B23EA8423DA61ECD /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = RV23UF9649;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.eqtargets.music.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/EQtargetsMusic.app/EQtargetsMusic";
+			};
+			name = Debug;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
 		000000000000000000001025 /* Build configuration list for PBXProject "EQtargetsMusic" */ = {
-			isa = XCConfigurationList; buildConfigurations = (000000000000000000001027 /* Debug */, 000000000000000000001028 /* Release */,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release;
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				000000000000000000001027 /* Debug */,
+				000000000000000000001028 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
 		};
 		000000000000000000001026 /* Build configuration list for PBXNativeTarget "EQtargetsMusic" */ = {
-			isa = XCConfigurationList; buildConfigurations = (000000000000000000001029 /* Debug */, 00000000000000000000102A /* Release */,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release;
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				000000000000000000001029 /* Debug */,
+				00000000000000000000102A /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		E44DB68517F16A220E9AE145 /* Build configuration list for PBXNativeTarget "EQtargetsMusicTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				14FA21BCE2828D9A7E1F337B /* Release */,
+				2797E681B23EA8423DA61ECD /* Debug */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
 	};
