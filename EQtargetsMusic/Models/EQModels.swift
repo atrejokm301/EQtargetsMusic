@@ -266,29 +266,41 @@ enum AutoEQParser {
         }
     }
 
+    /// Map an exporter's filter-type token to an `EQFilterType`.
+    ///
+    /// AutoEQ emits `PK` throughout, but oratory1990 / Squiglink presets — the
+    /// usual source for headphone targets — lead with a low shelf and often end
+    /// with a high shelf. Those were previously unmatched and silently dropped,
+    /// while the file's `Preamp:` (computed *with* them) was still imported —
+    /// so the curve lost its bass compensation and kept the attenuation.
+    private static func filterType(for token: String) -> EQFilterType {
+        switch token.uppercased() {
+        case "LS", "LSC", "LSQ": return .lowShelf
+        case "HS", "HSC", "HSQ": return .highShelf
+        default: return .peak
+        }
+    }
+
     static func parse(text: String) throws -> EQLayerState {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { throw ParseError.empty }
 
-        var preamp: Double = 0
-        if let m = trimmed.firstMatch(of: #/(?i)Preamp\s*:\s*([+-]?\d+(?:\.\d+)?)\s*dB/#) {
-            preamp = Double(m.1) ?? 0
-            preamp = min(max(preamp, EQLayerState.preampRange.lowerBound), EQLayerState.preampRange.upperBound)
-        }
+        // Longest-first alternation: `LS` would otherwise match the prefix of
+        // `LSC` and strand the trailing character, failing the whole line.
+        let filterPattern = #/(?i)Filter\s+\d+\s*:\s*(ON|OFF)\s+(LSC|LSQ|LS|HSC|HSQ|HS|PEAK|PEQ|PK|Bell)\s+Fc\s+([+-]?\d+(?:\.\d+)?)\s*Hz\s+Gain\s+([+-]?\d+(?:\.\d+)?)\s*dB\s+Q\s+([+-]?\d+(?:\.\d+)?)/#
 
+        // Collect every filter first — selecting which to keep needs the whole set.
         var bands: [EQBand] = []
-        let filterPattern = #/(?i)Filter\s+\d+\s*:\s*(ON|OFF)\s+(PK|PEAK|PEQ|Bell)\s+Fc\s+([+-]?\d+(?:\.\d+)?)\s*Hz\s+Gain\s+([+-]?\d+(?:\.\d+)?)\s*dB\s+Q\s+([+-]?\d+(?:\.\d+)?)/#
-
         for match in trimmed.matches(of: filterPattern) {
             bands.append(
                 EQBand(
                     frequency: Double(match.3) ?? 1000,
                     gain: Double(match.4) ?? 0,
                     q: Double(match.5) ?? 1.0,
-                    isEnabled: String(match.1).uppercased() == "ON"
+                    isEnabled: String(match.1).uppercased() == "ON",
+                    filterType: filterType(for: String(match.2))
                 )
             )
-            if bands.count >= EQLayerState.bandCount { break }
         }
 
         if bands.isEmpty {
@@ -301,11 +313,25 @@ enum AutoEQParser {
                         q: Double(match.3) ?? 1.0
                     )
                 )
-                if bands.count >= EQLayerState.bandCount { break }
             }
         }
 
         guard !bands.isEmpty else { throw ParseError.noFilters }
+
+        // More filters than hardware bands: keep the ones that shape the curve
+        // most, not merely the first ten. Truncating in file order discards the
+        // largest correction whenever a preset lists it late.
+        if bands.count > EQLayerState.bandCount {
+            let kept = bands.enumerated()
+                .sorted { lhs, rhs in
+                    let l = abs(lhs.element.gain), r = abs(rhs.element.gain)
+                    return l == r ? lhs.offset < rhs.offset : l > r
+                }
+                .prefix(EQLayerState.bandCount)
+                .sorted { $0.offset < $1.offset }   // restore file (frequency) order
+                .map(\.element)
+            bands = Array(kept)
+        }
 
         if bands.count < EQLayerState.bandCount {
             let d = EQBand.defaultTenBands()
@@ -316,6 +342,16 @@ enum AutoEQParser {
                 bands.append(f)
             }
         }
+
+        // Derive preamp from the curve we actually realized rather than trusting
+        // the file's value. They agree when nothing was dropped (measured within
+        // 0.03 dB on a real AutoEQ export); they diverge exactly when filters were
+        // discarded or gains clamped — which is when the file's value is wrong.
+        // Never positive: a cuts-only curve gets 0, matching AutoEQ's convention.
+        let realizedPeak = FrequencyResponse.peakMagnitudeDB(bands: bands)
+        let preamp = min(max(-max(realizedPeak, 0),
+                             EQLayerState.preampRange.lowerBound),
+                         EQLayerState.preampRange.upperBound)
 
         return EQLayerState(preamp: preamp, bands: bands)
     }
@@ -376,6 +412,34 @@ enum FrequencyResponse {
         // Flat line — no marker
         if abs(best.magnitudeDB) < 0.05 { return nil }
         return Peak(frequency: best.frequency, magnitudeDB: best.magnitudeDB)
+    }
+
+    /// Peak magnitude of a band set in dB, ignoring preamp.
+    ///
+    /// Uses a fine sweep rather than the 96-point display grid: that grid lands
+    /// within ~0.34 dB of the true peak on a real AutoEQ preset, which is fine
+    /// for drawing a line but not for deriving preamp, where the error becomes
+    /// permanent headroom loss (or clipping).
+    static func peakMagnitudeDB(bands: [EQBand], sampleRate: Double = sampleRate) -> Double {
+        let filters = bands.filter(\.isEnabled).map {
+            EQBiquad(
+                type: $0.filterType,
+                frequency: $0.frequency,
+                gainDB: $0.gain,
+                q: $0.q,
+                sampleRate: sampleRate
+            )
+        }
+        guard !filters.isEmpty else { return 0 }
+        var peak = -Double.infinity
+        var f = 20.0
+        while f <= 20_000 {
+            var m = 0.0
+            for filter in filters { m += filter.magnitudeDB(at: f, sampleRate: sampleRate) }
+            if m > peak { peak = m }
+            f *= 1.005
+        }
+        return peak.isFinite ? peak : 0
     }
 
     static func xPosition(_ frequency: Double) -> Double {
