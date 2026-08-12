@@ -7,7 +7,7 @@
 //
 
 import Foundation
-import AVFoundation
+@preconcurrency import AVFoundation
 import MediaPlayer
 import Combine
 import UIKit
@@ -19,7 +19,9 @@ private let playerLog = Logger(subsystem: "com.eqtargets.music", category: "Play
 
 // MARK: - Streaming convert cursor
 
-private final class StreamingCursor {
+/// Cursor is only mutated from the main-actor streaming path; marked unchecked so
+/// AVAudioPlayerNode completion handlers (Sendable) can carry it safely.
+private final class StreamingCursor: @unchecked Sendable {
     var pos: AVAudioFramePosition
     init(_ pos: AVAudioFramePosition) { self.pos = pos }
 }
@@ -56,7 +58,10 @@ enum ShuffleMode: String, CaseIterable, Identifiable, Codable {
 /// One fully independent deck:
 /// `Player → Target PEQ → Fine-Tune PEQ → Bass Processor → Limiter → deck mixer`.
 /// Bass / Limiter are separate units — never written into Target / Fine-Tune state.
-final class PlaybackDeck {
+///
+/// `@unchecked Sendable`: graph nodes are only mutated on the main actor, but
+/// AVAudioPlayerNode completion handlers require Sendable captures.
+final class PlaybackDeck: @unchecked Sendable {
     let player = AVAudioPlayerNode()
     let targetEQ: AVAudioUnitEQ
     let fineEQ: AVAudioUnitEQ
@@ -1194,10 +1199,10 @@ extension AudioPlayerEngine {
         }
 
         // Volume-only fade on deck mixers — Target/Fine-Tune EQ untouched.
+        // During the fade, activeDeck is still outgoing and inactiveDeck is incoming
+        // (roles swap only when progress hits 1). Read decks from `self` so the Timer
+        // handler does not capture non-Sendable AV node references.
         let start = CACurrentMediaTime()
-        let outMixer = outgoing.mixer
-        let inMixer = incoming.mixer
-        let outPlayer = outgoing.player
         // ~20 Hz is plenty for volume ramps; avoids 45 Hz main-thread wakeups.
         let tick: TimeInterval = 1.0 / 20.0
 
@@ -1212,25 +1217,27 @@ extension AudioPlayerEngine {
                 }
                 let progress = min(max((CACurrentMediaTime() - start) / max(fadeDur, 0.05), 0), 1)
                 let g = CrossfadeMath.gains(progress: progress, curve: fadeCurve)
-                outMixer.outputVolume = g.out
-                inMixer.outputVolume = g.inn
+                let outDeck = self.activeDeck
+                let inDeck = self.inactiveDeck
+                outDeck.mixer.outputVolume = g.out
+                inDeck.mixer.outputVolume = g.inn
 
                 if progress >= 1 {
                     t.invalidate()
                     self.crossfadeTimer = nil
-                    outgoing.streamFeedGeneration &+= 1
+                    outDeck.streamFeedGeneration &+= 1
                     // Silence outgoing first, then swap roles, then bypass inactive EQ
                     // (never toggle unit.bypass while that deck's mixer volume > 0).
-                    outPlayer.stop()
-                    outPlayer.reset()
-                    outMixer.outputVolume = 0
-                    inMixer.outputVolume = 1
-                    outgoing.file = nil
-                    outgoing.track = nil
+                    outDeck.player.stop()
+                    outDeck.player.reset()
+                    outDeck.mixer.outputVolume = 0
+                    inDeck.mixer.outputVolume = 1
+                    outDeck.file = nil
+                    outDeck.track = nil
                     self.fadingOutFile = nil
 
-                    self.activeDeck = incoming
-                    self.inactiveDeck = outgoing
+                    self.activeDeck = inDeck
+                    self.inactiveDeck = outDeck
                     self.isTransitioning = false
                     // Active keeps DualEQ processing; new inactive → targetEQ+fineEQ bypass.
                     self.applyEQ(to: self.activeDeck, processingEnabled: true)
@@ -1627,7 +1634,8 @@ extension AudioPlayerEngine {
     /// Playback clock for session + graph. 48 kHz matches modern iPhone / AirPods
     /// hardware and avoids hopping between rates when the library is mixed 44.1/48.
     /// Battery delta vs 44.1 is small; stability and converter quality matter more for clarity.
-    private static let playbackSampleRate: Double = 48_000
+    /// `nonisolated` so default args / static helpers can read it off the main actor.
+    nonisolated private static let playbackSampleRate: Double = 48_000
 
     /// 44.1→48 converter quality. Max when cool; step down under heat (SRC is real CPU).
     private static var preferredSRCQuality: AVAudioQuality {
@@ -1649,7 +1657,7 @@ extension AudioPlayerEngine {
     }
 
     /// Keep AVAudioSession preferred rate locked to the graph (48 kHz).
-    private func alignSessionSampleRate(to rate: Double = playbackSampleRate) {
+    private func alignSessionSampleRate(to rate: Double = 48_000) {
         let target = Self.playbackSampleRate
         _ = rate // API keeps a parameter for call-site clarity
         // Prefer rate only — do not re-setActive on main (Hang Risk + redundant).

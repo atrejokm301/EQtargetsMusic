@@ -16,7 +16,7 @@
 //
 
 import Foundation
-import AVFoundation
+@preconcurrency import AVFoundation
 import Accelerate
 import os
 
@@ -88,7 +88,7 @@ enum BPMDetector {
         let firstLen = min(windowSamples, samples.count)
         guard firstLen > hopSize * 50 else { return nil }
         let firstSlice = Array(samples[0 ..< firstLen])
-        guard var best = estimateWindow(samples: firstSlice) else {
+        guard let best = estimateWindow(samples: firstSlice) else {
             bpmLog.debug("no confident BPM: \(fileURL.lastPathComponent, privacy: .public)")
             return nil
         }

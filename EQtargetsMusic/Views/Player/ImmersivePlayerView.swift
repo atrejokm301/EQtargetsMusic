@@ -181,11 +181,11 @@ struct ImmersivePlayerView: View {
             // immediately so a slow mini→full pull never paints only the 96px list thumb.
             applyTrackArtwork(forceHeroReload: true)
         }
-        .onChange(of: artworkVisuals.trackID) { _ in
+        .onChange(of: artworkVisuals.trackID) { _, _ in
             // Root refreshed visuals for a new track — always swap + upgrade hero.
             applyTrackArtwork(forceHeroReload: true)
         }
-        .onChange(of: player.currentTrack?.id) { id in
+        .onChange(of: player.currentTrack?.id) { _, id in
             if id == nil {
                 showQueue = false
                 collapseDragActive = false

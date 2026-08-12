@@ -17,7 +17,7 @@ struct QueueGlassSurface: View {
     @Environment(\.colorScheme) private var scheme
 
     var body: some View {
-        let isDark = true // queue is always dark glass
+        // Queue is always dark glass (no light-mode branch).
         let stops = visuals.atmosphericColors(maxStops: 4)
         let hasArt = visuals.hasArtwork && !stops.isEmpty
 

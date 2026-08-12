@@ -132,7 +132,7 @@ struct PlayerProgressScrubber: View {
         }
         .opacity(player.currentTrack != nil ? 1 : 0.45)
         .onAppear { displayTime = player.currentTime }
-        .onChange(of: player.currentTrack?.id) { _ in
+        .onChange(of: player.currentTrack?.id) { _, _ in
             displayTime = player.currentTime
             isScrubbing = false
         }

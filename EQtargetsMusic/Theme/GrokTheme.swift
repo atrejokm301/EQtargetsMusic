@@ -349,7 +349,7 @@ private struct GrokNavChromeModifier<Trailing: View>: ViewModifier {
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackgroundVisibility(.visible, for: .navigationBar)
             .scrollEdgeEffectStyle(.soft, for: .top)
-            .environment(\.grokScrollOffsetHandler, { [hideAfter, showBelow] y in
+            .environment(\.grokScrollOffsetHandler, { y in
                 // Mutation goes through a MainActor hop so we never animate the ScrollView layout.
                 Task { @MainActor in
                     // Read/write @State via the modifier instance is invalid from escaping closure.

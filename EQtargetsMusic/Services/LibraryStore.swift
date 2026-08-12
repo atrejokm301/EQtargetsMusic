@@ -32,7 +32,8 @@ final class LibraryStore: ObservableObject {
     static let maxFilesPerImport = 10_000
     /// Offline BPM analysis cap per idle batch (battery/thermals).
     /// Smaller batches + longer cool-downs keep the phone cooler during library fills.
-    static let maxBPMAnalysesPerScan = 12
+    /// `nonisolated` so default parameter values (evaluated nonisolated) can reference it.
+    nonisolated static let maxBPMAnalysesPerScan = 12
     /// Bump when detector improves — re-runs tracks that were “checked” but got no BPM.
     /// v5 = energy-flux lean detector (battery/thermal pass).
     private static let bpmEngineVersion = 5

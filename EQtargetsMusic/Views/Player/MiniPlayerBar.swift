@@ -66,7 +66,7 @@ struct MiniPlayerBar: View {
         .accessibilityElement(children: .contain)
         .accessibilityValue(progressA11y)
         .onAppear { displayTime = player.currentTime }
-        .onChange(of: player.currentTrack?.id) { _ in
+        .onChange(of: player.currentTrack?.id) { _, _ in
             displayTime = player.currentTime
         }
         .onReceive(player.progressSubject) { displayTime = $0 }

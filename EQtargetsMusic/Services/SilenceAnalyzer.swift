@@ -108,7 +108,7 @@ enum SilenceAnalyzer {
             midPeakDB: nil
         )
 
-        var intro = clampIntro(decision.introSkip, duration: meta.duration)
+        let intro = clampIntro(decision.introSkip, duration: meta.duration)
         silenceLog.debug(
             "fast v3 intro=\(intro, format: .fixed(precision: 2))s open=\(decision.openGateDB, format: .fixed(precision: 1))dB floor=\(decision.noiseFloorDB, format: .fixed(precision: 1))dB dur=\(meta.duration, format: .fixed(precision: 1))s"
         )
