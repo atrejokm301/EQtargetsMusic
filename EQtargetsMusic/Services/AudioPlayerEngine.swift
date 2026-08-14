@@ -56,7 +56,7 @@ enum ShuffleMode: String, CaseIterable, Identifiable, Codable {
 // MARK: - Playback deck (independent PEQ + Bass chain)
 
 /// One fully independent deck:
-/// `Player → Target PEQ → Fine-Tune PEQ → Bass Processor → Limiter → deck mixer`.
+/// `Player → Target PEQ → Fine-Tune PEQ → Bass Processor → Punch → Limiter → deck mixer`.
 /// Bass / Limiter are separate units — never written into Target / Fine-Tune state.
 ///
 /// `@unchecked Sendable`: graph nodes are only mutated on the main actor, but
@@ -67,6 +67,9 @@ final class PlaybackDeck: @unchecked Sendable {
     let fineEQ: AVAudioUnitEQ
     /// Post-PEQ bass stage. 4 bands: shelf + peaking helpers.
     let bassEQ: AVAudioUnitEQ
+    /// Dynamic layer for the Transient Punch style (`EQTPunchAudioUnit`).
+    /// Inert for every other style — see `TransientPunchProcessor`.
+    let punch: AVAudioUnitEffect
     /// Post-Bass dynamics. Custom lookahead brickwall limiter (`EQTLimiterAudioUnit`).
     let limiter: AVAudioUnitEffect
     let mixer = AVAudioMixerNode()
@@ -86,8 +89,10 @@ final class PlaybackDeck: @unchecked Sendable {
         targetEQ = AVAudioUnitEQ(numberOfBands: bandCount)
         fineEQ = AVAudioUnitEQ(numberOfBands: bandCount)
         bassEQ = AVAudioUnitEQ(numberOfBands: BassProcessorState.bandCount)
+        punch = TransientPunchDSP.makeAudioUnit()
         limiter = LimiterDSP.makeAudioUnit()
-        // Start bypassed until first applyLimiter().
+        // Start bypassed until the first apply.
+        punch.bypass = true
         limiter.bypass = true
     }
 
@@ -96,6 +101,7 @@ final class PlaybackDeck: @unchecked Sendable {
         engine.attach(targetEQ)
         engine.attach(fineEQ)
         engine.attach(bassEQ)
+        engine.attach(punch)
         engine.attach(limiter)
         engine.attach(mixer)
     }
@@ -104,7 +110,8 @@ final class PlaybackDeck: @unchecked Sendable {
         engine.connect(player, to: targetEQ, format: format)
         engine.connect(targetEQ, to: fineEQ, format: format)
         engine.connect(fineEQ, to: bassEQ, format: format)
-        engine.connect(bassEQ, to: limiter, format: format)
+        engine.connect(bassEQ, to: punch, format: format)
+        engine.connect(punch, to: limiter, format: format)
         engine.connect(limiter, to: mixer, format: format)
         engine.connect(mixer, to: engine.mainMixerNode, format: format)
     }
@@ -114,6 +121,7 @@ final class PlaybackDeck: @unchecked Sendable {
         engine.disconnectNodeOutput(targetEQ)
         engine.disconnectNodeOutput(fineEQ)
         engine.disconnectNodeOutput(bassEQ)
+        engine.disconnectNodeOutput(punch)
         engine.disconnectNodeOutput(limiter)
         engine.disconnectNodeOutput(mixer)
     }
@@ -1931,6 +1939,41 @@ extension AudioPlayerEngine {
     func applyBass() {
         applyBass(to: activeDeck, processingEnabled: true)
         applyBass(to: inactiveDeck, processingEnabled: isTransitioning)
+        applyPunch(to: activeDeck, processingEnabled: true)
+        applyPunch(to: inactiveDeck, processingEnabled: isTransitioning)
+    }
+
+    /// Push only the dynamic stage. Driven by the same `bass` state, so it is
+    /// always applied alongside `applyBass`. Serves both Transient Punch and
+    /// Sustain / Rumble — the node picks its gain law from the style.
+    private func applyPunch(to deck: PlaybackDeck, processingEnabled: Bool) {
+        var params = TransientPunchDSP.unitParams(from: bass, sampleRate: sampleRate)
+        if !processingEnabled {
+            params.bypass = true
+        }
+        TransientPunchDSP.apply(params: params, to: deck.punch)
+
+        #if DEBUG
+        if !params.bypass {
+            let rumble = params.coefficients.mode == .rumble
+            let boostAmt = rumble ? self.bass.rumbleSustain : self.bass.punchAttack
+            let cutAmt = rumble ? self.bass.rumbleSoften : self.bass.punchSustain
+            let fc = self.bass.cutoff * (rumble ? SustainRumbleTuning.crossoverMultiplier : 1.15)
+            playerLog.debug(
+                "\(rumble ? "Rumble" : "Punch") boost=\(boostAmt, format: .fixed(precision: 2)) cut=\(cutAmt, format: .fixed(precision: 2)) str=\(self.bass.strength, format: .fixed(precision: 2)) fc=\(fc, format: .fixed(precision: 0))Hz"
+            )
+        }
+        #endif
+    }
+
+    /// Live attack boost from the Punch stage in dB, for metering.
+    var punchAttackBoostDB: Double {
+        TransientPunchDSP.attackBoostDB(of: activeDeck.punch)
+    }
+
+    /// Live sustain trim from the Punch stage in dB (positive), for metering.
+    var punchSustainTrimDB: Double {
+        TransientPunchDSP.sustainTrimDB(of: activeDeck.punch)
     }
 
     /// Push only the Limiter stage (DualEQ / Bass units untouched).
@@ -1961,8 +2004,9 @@ extension AudioPlayerEngine {
             globalBypass: dual.isBypassed || forceUnitBypass,
             label: "FineTune"
         )
-        // Bass + Limiter are independent of dual.isBypassed.
+        // Bass + Punch + Limiter are independent of dual.isBypassed.
         applyBass(to: deck, processingEnabled: processingEnabled)
+        applyPunch(to: deck, processingEnabled: processingEnabled)
         applyLimiter(to: deck, processingEnabled: processingEnabled)
     }
 

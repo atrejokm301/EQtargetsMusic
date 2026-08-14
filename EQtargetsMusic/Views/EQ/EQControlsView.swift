@@ -21,6 +21,10 @@ struct EQControlsView: View {
     var onToast: ((String) -> Void)? = nil
     /// Live limiter gain reduction in dB (positive) for the editor's meter.
     var limiterGainReduction: () -> Double = { 0 }
+    /// Live Transient Punch attack boost in dB (positive) for the bass meter.
+    var punchAttackBoost: () -> Double = { 0 }
+    /// Live Transient Punch sustain trim in dB (positive) for the bass meter.
+    var punchSustainTrim: () -> Double = { 0 }
 
     @Environment(\.grokTheme) private var theme
     @EnvironmentObject private var presetStore: EQPresetStore
@@ -100,8 +104,12 @@ struct EQControlsView: View {
             .environment(\.grokTheme, theme)
         }
         .sheet(isPresented: $showBassSheet) {
-            BassStyleEditorSheet(bass: $bass)
-                .environment(\.grokTheme, theme)
+            BassStyleEditorSheet(
+                bass: $bass,
+                punchAttackBoost: punchAttackBoost,
+                punchSustainTrim: punchSustainTrim
+            )
+            .environment(\.grokTheme, theme)
         }
         .sheet(isPresented: $showLimiterSheet) {
             LimiterEditorSheet(
@@ -175,8 +183,18 @@ struct EQControlsView: View {
 /// Full bass processor UI in a frosted bottom sheet — never touches DualEQ.
 struct BassStyleEditorSheet: View {
     @Binding var bass: BassProcessorState
+    /// Live attack boost in dB (positive) from the active deck's Punch stage.
+    var punchAttackBoost: () -> Double = { 0 }
+    /// Live sustain trim in dB (positive) from the same stage.
+    var punchSustainTrim: () -> Double = { 0 }
+
     @Environment(\.grokTheme) private var theme
     @Environment(\.dismiss) private var dismiss
+
+    /// Meter ballistics: instant rise, ~150 ms decay — same feel as the limiter's
+    /// gain-reduction meter so the two read identically.
+    @State private var meterBoost: Double = 0
+    @State private var meterTrim: Double = 0
 
     private var bassTint: Color { theme.accentSecondary }
 
@@ -289,6 +307,13 @@ struct BassStyleEditorSheet: View {
                         .glassCard(corner: 16)
                     }
 
+                    // Dynamic controls. Punch and Rumble share one time-domain
+                    // stage running opposite gain laws; Clean and Off are static
+                    // by design, so the card would be inert for them.
+                    if bass.style.hasDynamics {
+                        dynamicsCard
+                    }
+
                     Text("Runs after Target and Fine-Tune. Does not edit AutoEQ or EQ bands.")
                         .font(.app(size: 11, weight: .medium, design: .rounded))
                         .foregroundStyle(theme.tertiaryText)
@@ -319,10 +344,177 @@ struct BassStyleEditorSheet: View {
                         .foregroundStyle(theme.accent)
                 }
             }
+            .onReceive(Timer.publish(every: 0.05, on: .main, in: .common).autoconnect()) { _ in
+                // Only Punch and Rumble drive the dynamic stage; the others leave
+                // the kernel bypassed, so polling it would just read zeros.
+                guard bass.style.hasDynamics else {
+                    if meterBoost != 0 { meterBoost = 0 }
+                    if meterTrim != 0 { meterTrim = 0 }
+                    return
+                }
+                let boost = punchAttackBoost()
+                let trim = punchSustainTrim()
+                meterBoost = boost > meterBoost ? boost : meterBoost * 0.82 + boost * 0.18
+                meterTrim = trim > meterTrim ? trim : meterTrim * 0.82 + trim * 0.18
+            }
         }
         .frostedBleedSheet(accent: bassTint)
         .presentationDetents([.fraction(0.55), .large])
         .presentationContentInteraction(.scrolls)
+    }
+
+    // MARK: Dynamics
+    //
+    // Punch and Rumble drive the same stage in opposite directions, so they get
+    // the same card with mirrored wording: one slider that boosts, one that
+    // cuts, and the meter showing which is currently acting.
+
+    private var dynamicsCard: some View {
+        let rumble = bass.style == .sustainRumble
+
+        return VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 6) {
+                Image(systemName: rumble ? "water.waves" : "waveform.path")
+                    .font(.app(size: 12, weight: .semibold))
+                Text("Dynamics")
+                    .font(.app(size: 12, weight: .bold, design: .rounded))
+                    .textCase(.uppercase)
+                    .tracking(0.6)
+            }
+            .foregroundStyle(theme.secondaryText)
+
+            // Boosting half.
+            bassSlider(
+                title: rumble ? "Sustain length" : "Attack emphasis",
+                value: Binding(
+                    get: { rumble ? bass.rumbleSustain : bass.punchAttack },
+                    set: { v in
+                        var n = bass
+                        if rumble { n.rumbleSustain = v } else { n.punchAttack = v }
+                        n.sanitize()
+                        bass = n
+                    }
+                ),
+                range: BassProcessorState.punchAttackRange,
+                format: { $0 < 0.005 ? "Off" : String(format: "%.0f%%", $0 * 100) }
+            )
+
+            // Cutting half.
+            bassSlider(
+                title: rumble ? "Attack softening" : "Sustain control",
+                value: Binding(
+                    get: { rumble ? bass.rumbleSoften : bass.punchSustain },
+                    set: { v in
+                        var n = bass
+                        if rumble { n.rumbleSoften = v } else { n.punchSustain = v }
+                        n.sanitize()
+                        bass = n
+                    }
+                ),
+                range: BassProcessorState.punchSustainRange,
+                format: { $0 < 0.005 ? "Off" : String(format: "%.0f%%", $0 * 100) }
+            )
+
+            activityMeter(
+                title: "\(bass.style.compactTitle) activity",
+                leftLabel: rumble ? "soften" : "trim",
+                rightLabel: rumble ? "sustain" : "boost"
+            )
+
+            Text(rumble
+                 ? "Sustain holds a note up as it decays, so the low end rings on longer — it only acts once the note is already falling, so steady bass keeps its level. Attack softening rounds the leading edge, the deliberate opposite of Punch."
+                 : "Attack lifts the leading edge of kicks. Sustain control trims what sits behind them — raise it for a tighter, drier low end.")
+                .font(.app(size: 11, weight: .medium, design: .rounded))
+                .foregroundStyle(theme.tertiaryText)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(14)
+        .glassCard(corner: 16)
+    }
+
+    // MARK: Activity meter
+
+    /// Centre-anchored bar: boost grows right, trim grows left, because the two
+    /// stages pull the low band in opposite directions and the *contrast* between
+    /// them is the whole point of the style. Both halves share one 9 dB scale
+    /// (the attack stage's own ceiling) so a bar twice as long really is twice
+    /// the gain change — the trim side simply never fills past its 6 dB limit.
+    private func activityMeter(title: String, leftLabel: String, rightLabel: String) -> some View {
+        // One shared scale across both styles so switching chips compares like
+        // with like. Punch's 9 dB boost is the larger of the four ceilings.
+        let fullScaleDB = TransientPunchTuning.maxAttackBoostDB
+        let boostFraction = min(1.0, max(0.0, meterBoost / fullScaleDB))
+        let trimFraction = min(1.0, max(0.0, meterTrim / fullScaleDB))
+        let idle = meterBoost < 0.05 && meterTrim < 0.05
+
+        return VStack(alignment: .leading, spacing: 5) {
+            HStack {
+                Text(title)
+                    .font(.app(size: 11, weight: .semibold, design: .rounded))
+                    .foregroundStyle(theme.secondaryText)
+                Spacer()
+                Text(punchReadout)
+                    .font(.app(size: 11, weight: .bold, design: .rounded))
+                    .foregroundStyle(idle ? theme.tertiaryText : theme.primaryText)
+                    .monospacedDigit()
+            }
+            GeometryReader { geo in
+                let half = geo.size.width / 2
+                ZStack(alignment: .leading) {
+                    Capsule()
+                        .fill(theme.primaryText.opacity(0.08))
+                    // Centre tick — the 0 dB reference the two stages move away from.
+                    Rectangle()
+                        .fill(theme.primaryText.opacity(0.22))
+                        .frame(width: 1)
+                        .offset(x: half - 0.5)
+                    // Trim: right-aligned inside the left half so it grows leftward.
+                    // Neutral rather than tinted — same stage, opposite direction,
+                    // and 0.9 keeps it legible against the 8% track in dark mode.
+                    Capsule()
+                        .fill(theme.secondaryText.opacity(0.9))
+                        .frame(width: max(0, half * trimFraction))
+                        .offset(x: half - max(0, half * trimFraction))
+                    // Boost: starts at centre, grows right.
+                    Capsule()
+                        .fill(
+                            LinearGradient(
+                                colors: [bassTint.opacity(0.75), bassTint],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                        )
+                        .frame(width: max(0, half * boostFraction))
+                        .offset(x: half)
+                }
+            }
+            .frame(height: 6)
+            .animation(.easeOut(duration: 0.08), value: boostFraction)
+            .animation(.easeOut(duration: 0.08), value: trimFraction)
+
+            HStack {
+                Text(leftLabel)
+                Spacer()
+                Text(rightLabel)
+            }
+            .font(.app(size: 10, weight: .semibold, design: .rounded))
+            .foregroundStyle(theme.tertiaryText)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(title)
+        .accessibilityValue(
+            idle
+                ? "Idle"
+                : String(format: "Boost %.1f decibels, trim %.1f decibels", meterBoost, meterTrim)
+        )
+    }
+
+    /// Single-line numeric readout. Shows whichever stage is doing more work, so
+    /// the number never fights the bar for attention.
+    private var punchReadout: String {
+        if meterBoost < 0.05 && meterTrim < 0.05 { return "0.0 dB" }
+        if meterBoost >= meterTrim { return String(format: "+%.1f dB", meterBoost) }
+        return String(format: "−%.1f dB", meterTrim)
     }
 
     private func bassSlider(

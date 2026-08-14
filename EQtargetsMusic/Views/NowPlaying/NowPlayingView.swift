@@ -33,7 +33,10 @@ struct NowPlayingView: View {
                     bass: $player.bass,
                     limiter: $player.limiter,
                     onImportAutoEQ: { showImporter = true },
-                    onToast: { player.showToast($0) }
+                    onToast: { player.showToast($0) },
+                    limiterGainReduction: { player.limiterGainReductionDB },
+                    punchAttackBoost: { player.punchAttackBoostDB },
+                    punchSustainTrim: { player.punchSustainTrimDB }
                 )
                 .padding(16)
                 .glassCard(corner: 20)

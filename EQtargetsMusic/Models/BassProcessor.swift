@@ -73,6 +73,13 @@ enum BassStyle: String, CaseIterable, Identifiable, Codable {
         }
     }
 
+    /// True for styles backed by the shared time-domain stage
+    /// (`TransientPunchDSPCore`). Natural Clean is a deliberately static gentle
+    /// lift and Off is bypassed, so neither has anything to modulate.
+    var hasDynamics: Bool {
+        self == .transientPunch || self == .sustainRumble
+    }
+
     /// Auto-profile cutoff (Hz) applied when the user picks this style chip.
     /// Slider remains free afterward for manual override.
     /// - `none`: leave the user’s last cutoff alone (processor is bypassed).
@@ -106,11 +113,43 @@ struct BassProcessorState: Codable, Equatable {
     /// Explicit makeup / cut after bass stage (dB). Added on top of mild style headroom.
     var postGain: Double = 0.0
 
+    /// **Transient Punch only.** How strongly a detected low-band attack is
+    /// emphasised, 0…1. Scaled by `strength`. See `TransientPunchProcessor`.
+    var punchAttack: Double = 0.5
+
+    /// **Transient Punch only.** How strongly *sustained* low energy is trimmed
+    /// behind the attack, 0…1 — the "controlled sub" half of the style.
+    ///
+    /// Defaults to 0 on purpose: at 0 the dynamic stage only ever adds gain on
+    /// transients and is exactly unity the rest of the time, so the K-weighted
+    /// loudness matching `BassProcessorDSP` performs still holds and upgrading
+    /// cannot quietly change how loud anyone's existing setting is.
+    var punchSustain: Double = 0.0
+
+    /// **Sustain / Rumble only.** How strongly a *decaying* low note is held up,
+    /// 0…1 — the "long low end" the style is named for. Scaled by `strength`.
+    ///
+    /// Unlike `punchAttack` this can default non-zero safely: the rumble stage is
+    /// unity whenever the low band is steady and only acts once the envelope has
+    /// already fallen below its own running average, so it cannot raise the
+    /// steady-state level the K-weighted style matching was derived from.
+    /// See `SustainRumbleTuning`.
+    var rumbleSustain: Double = 0.5
+
+    /// **Sustain / Rumble only.** How strongly the leading edge of a note is
+    /// *softened*, 0…1 — the deliberate opposite of Transient Punch. Defaults to
+    /// 0 because softening attacks is a taste call, not a neutral improvement.
+    var rumbleSoften: Double = 0.0
+
     static let flat = BassProcessorState()
 
     static let strengthRange: ClosedRange<Double> = 0 ... 1
     static let cutoffRange: ClosedRange<Double> = 40 ... 250
     static let postGainRange: ClosedRange<Double> = -12 ... 6
+    static let punchAttackRange: ClosedRange<Double> = 0 ... 1
+    static let punchSustainRange: ClosedRange<Double> = 0 ... 1
+    static let rumbleSustainRange: ClosedRange<Double> = 0 ... 1
+    static let rumbleSoftenRange: ClosedRange<Double> = 0 ... 1
 
     /// Hardware bands on the post-PEQ `AVAudioUnitEQ` (shelf + peaking helpers).
     static let bandCount = 4
@@ -128,6 +167,42 @@ struct BassProcessorState: Codable, Equatable {
         strength = min(max(strength, Self.strengthRange.lowerBound), Self.strengthRange.upperBound)
         cutoff = min(max(cutoff, Self.cutoffRange.lowerBound), Self.cutoffRange.upperBound)
         postGain = min(max(postGain, Self.postGainRange.lowerBound), Self.postGainRange.upperBound)
+        punchAttack = min(max(punchAttack, Self.punchAttackRange.lowerBound), Self.punchAttackRange.upperBound)
+        punchSustain = min(max(punchSustain, Self.punchSustainRange.lowerBound), Self.punchSustainRange.upperBound)
+        rumbleSustain = min(max(rumbleSustain, Self.rumbleSustainRange.lowerBound), Self.rumbleSustainRange.upperBound)
+        rumbleSoften = min(max(rumbleSoften, Self.rumbleSoftenRange.lowerBound), Self.rumbleSoftenRange.upperBound)
+    }
+
+    // MARK: Codable
+    //
+    // Hand-written purely so state saved before the punch parameters existed
+    // still decodes. The synthesised conformance *fails* on a missing key, so
+    // adding a field to this struct without this would silently reset every
+    // existing user's Bass Style back to defaults on first launch.
+
+    private enum CodingKeys: String, CodingKey {
+        case style, strength, cutoff, postGain, punchAttack, punchSustain
+        case rumbleSustain, rumbleSoften
+    }
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = BassProcessorState()
+        style = try c.decodeIfPresent(BassStyle.self, forKey: .style) ?? d.style
+        strength = try c.decodeIfPresent(Double.self, forKey: .strength) ?? d.strength
+        cutoff = try c.decodeIfPresent(Double.self, forKey: .cutoff) ?? d.cutoff
+        postGain = try c.decodeIfPresent(Double.self, forKey: .postGain) ?? d.postGain
+        punchAttack = try c.decodeIfPresent(Double.self, forKey: .punchAttack) ?? d.punchAttack
+        punchSustain = try c.decodeIfPresent(Double.self, forKey: .punchSustain) ?? d.punchSustain
+        // State saved before Rumble had a dynamic stage falls back to the new
+        // defaults, so existing Rumble users get the sustain behaviour on
+        // upgrade. That is intentional: the stage is unity while the low band is
+        // steady, so their loudness does not move — only the tail gets longer.
+        rumbleSustain = try c.decodeIfPresent(Double.self, forKey: .rumbleSustain) ?? d.rumbleSustain
+        rumbleSoften = try c.decodeIfPresent(Double.self, forKey: .rumbleSoften) ?? d.rumbleSoften
+        sanitize()
     }
 
     func sanitized() -> BassProcessorState {

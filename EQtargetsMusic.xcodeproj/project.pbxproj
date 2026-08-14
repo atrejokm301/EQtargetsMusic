@@ -42,12 +42,14 @@
 		000000000000000000001054 /* PerformanceMemory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000001053 /* PerformanceMemory.swift */; };
 		000000000000000000001056 /* BassProcessor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000001055 /* BassProcessor.swift */; };
 		000000000000000000001058 /* LimiterProcessor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000001057 /* LimiterProcessor.swift */; };
+		A1B2C3D400000000000010C2 /* TransientPunchProcessor.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D400000000000010C1 /* TransientPunchProcessor.swift */; };
 		1D31AEA581D0BCD27D70966E /* CrossfadePlanTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52E30647C268D6EDADD4B99E /* CrossfadePlanTests.swift */; };
 		2FAC8AA3B43D923BC0C2B0D5 /* ShuffleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 60721378C8CEA7AF17B73407 /* ShuffleTests.swift */; };
 		3A3484E3A04C4257560C5C28 /* AutoEQParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 419241831B539D28C73DF10F /* AutoEQParserTests.swift */; };
 		51FCB629BD3F34F3A246F6B5 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 8158230D18CCFB4D47BEEEAA /* Foundation.framework */; };
 		BBB633C75B55428219B9D5F3 /* TestFixtures.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B82E3FE5CA8E89C8E7F2222 /* TestFixtures.swift */; };
 		D31256F3B392230381580B1E /* BassProcessorDSPTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 37835659118141871C838D90 /* BassProcessorDSPTests.swift */; };
+		A1B2C3D400000000000010D2 /* TransientPunchDSPTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D400000000000010D1 /* TransientPunchDSPTests.swift */; };
 		A1B2C3D400000000000010B2 /* LimiterPresetStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D400000000000010B1 /* LimiterPresetStoreTests.swift */; };
 		A1B2C3D400000000000010A2 /* LimiterDSPTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D400000000000010A1 /* LimiterDSPTests.swift */; };
 /* End PBXBuildFile section */
@@ -100,9 +102,11 @@
 		000000000000000000001053 /* PerformanceMemory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PerformanceMemory.swift; path = Services/PerformanceMemory.swift; sourceTree = "<group>"; };
 		000000000000000000001055 /* BassProcessor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = BassProcessor.swift; path = Models/BassProcessor.swift; sourceTree = "<group>"; };
 		000000000000000000001057 /* LimiterProcessor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = LimiterProcessor.swift; path = Models/LimiterProcessor.swift; sourceTree = "<group>"; };
+		A1B2C3D400000000000010C1 /* TransientPunchProcessor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = TransientPunchProcessor.swift; path = Models/TransientPunchProcessor.swift; sourceTree = "<group>"; };
 		1B82E3FE5CA8E89C8E7F2222 /* TestFixtures.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = TestFixtures.swift; sourceTree = "<group>"; };
 		1B8C6A4A8B286D297A4480E2 /* EQtargetsMusicTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = EQtargetsMusicTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		37835659118141871C838D90 /* BassProcessorDSPTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = BassProcessorDSPTests.swift; sourceTree = "<group>"; };
+		A1B2C3D400000000000010D1 /* TransientPunchDSPTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = TransientPunchDSPTests.swift; sourceTree = "<group>"; };
 		A1B2C3D400000000000010B1 /* LimiterPresetStoreTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = LimiterPresetStoreTests.swift; sourceTree = "<group>"; };
 		A1B2C3D400000000000010A1 /* LimiterDSPTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = LimiterDSPTests.swift; sourceTree = "<group>"; };
 		419241831B539D28C73DF10F /* AutoEQParserTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AutoEQParserTests.swift; sourceTree = "<group>"; };
@@ -156,6 +160,7 @@
 				000000000000000000001003 /* EQModels.swift */,
 				000000000000000000001055 /* BassProcessor.swift */,
 				000000000000000000001057 /* LimiterProcessor.swift */,
+				A1B2C3D400000000000010C1 /* TransientPunchProcessor.swift */,
 				000000000000000000001005 /* Track.swift */,
 				000000000000000000001007 /* AudioPlayerEngine.swift */,
 				000000000000000000001009 /* LibraryStore.swift */,
@@ -205,6 +210,7 @@
 			children = (
 				419241831B539D28C73DF10F /* AutoEQParserTests.swift */,
 				37835659118141871C838D90 /* BassProcessorDSPTests.swift */,
+				A1B2C3D400000000000010D1 /* TransientPunchDSPTests.swift */,
 				A1B2C3D400000000000010B1 /* LimiterPresetStoreTests.swift */,
 				A1B2C3D400000000000010A1 /* LimiterDSPTests.swift */,
 				52E30647C268D6EDADD4B99E /* CrossfadePlanTests.swift */,
@@ -318,6 +324,7 @@
 				000000000000000000001004 /* EQModels.swift in Sources */,
 				000000000000000000001056 /* BassProcessor.swift in Sources */,
 				000000000000000000001058 /* LimiterProcessor.swift in Sources */,
+				A1B2C3D400000000000010C2 /* TransientPunchProcessor.swift in Sources */,
 				000000000000000000001006 /* Track.swift in Sources */,
 				000000000000000000001008 /* AudioPlayerEngine.swift in Sources */,
 				00000000000000000000100A /* LibraryStore.swift in Sources */,
@@ -356,6 +363,7 @@
 			files = (
 				3A3484E3A04C4257560C5C28 /* AutoEQParserTests.swift in Sources */,
 				D31256F3B392230381580B1E /* BassProcessorDSPTests.swift in Sources */,
+				A1B2C3D400000000000010D2 /* TransientPunchDSPTests.swift in Sources */,
 				A1B2C3D400000000000010B2 /* LimiterPresetStoreTests.swift in Sources */,
 				A1B2C3D400000000000010A2 /* LimiterDSPTests.swift in Sources */,
 				1D31AEA581D0BCD27D70966E /* CrossfadePlanTests.swift in Sources */,
