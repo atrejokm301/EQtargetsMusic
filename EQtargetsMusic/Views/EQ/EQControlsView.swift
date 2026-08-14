@@ -19,6 +19,8 @@ struct EQControlsView: View {
     var onImportAutoEQ: () -> Void
     /// Optional toast when assigning devices (wired from Now Playing / player).
     var onToast: ((String) -> Void)? = nil
+    /// Live limiter gain reduction in dB (positive) for the editor's meter.
+    var limiterGainReduction: () -> Double = { 0 }
 
     @Environment(\.grokTheme) private var theme
     @EnvironmentObject private var presetStore: EQPresetStore
@@ -102,8 +104,13 @@ struct EQControlsView: View {
                 .environment(\.grokTheme, theme)
         }
         .sheet(isPresented: $showLimiterSheet) {
-            LimiterEditorSheet(limiter: $limiter)
-                .environment(\.grokTheme, theme)
+            LimiterEditorSheet(
+                limiter: $limiter,
+                gainReduction: limiterGainReduction,
+                onToast: onToast
+            )
+            .environmentObject(presetStore)
+            .environment(\.grokTheme, theme)
         }
     }
 
@@ -342,92 +349,52 @@ struct BassStyleEditorSheet: View {
 }
 
 // MARK: - Limiter editor sheet (same chrome as EQ Controls)
+//
+// Layout order is deliberate: enable + live gain-reduction meter, then genre
+// presets, then the user's own presets, then headphone links, and only then
+// the raw parameters. Most people pick a genre and never open the sliders, so
+// the sliders sit last behind a disclosure rather than greeting them first.
 
 struct LimiterEditorSheet: View {
     @Binding var limiter: LimiterState
+    /// Live gain reduction in dB (positive) from the active deck.
+    var gainReduction: () -> Double = { 0 }
+    var onToast: ((String) -> Void)? = nil
+
+    @EnvironmentObject private var presetStore: EQPresetStore
     @Environment(\.grokTheme) private var theme
     @Environment(\.dismiss) private var dismiss
 
+    @State private var showSaveAlert = false
+    @State private var newPresetName = ""
+    @State private var showAdvanced = false
+    /// Meter ballistics: fast rise, slow fall, so brief reduction stays readable.
+    @State private var meterGR: Double = 0
+    @State private var renameTarget: LimiterPreset?
+    @State private var renameText = ""
+
     private var tint: Color { theme.fineTint }
+
+    private static let genreColumns = Array(
+        repeating: GridItem(.flexible(), spacing: 6),
+        count: 4
+    )
+
+    /// Name of the preset the live state currently matches, or "" once edited.
+    private var activePresetName: String {
+        presetStore.limiterPresetName(matching: limiter)
+    }
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 10) {
-                    // Enable card
-                    HStack(spacing: 12) {
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text("Enable limiter")
-                                .font(.app(size: 15, weight: .bold, design: .rounded))
-                                .foregroundStyle(theme.primaryText)
-                            Text("After Target, Fine-Tune, and Bass · does not edit EQ bands")
-                                .font(.app(size: 12, weight: .medium, design: .rounded))
-                                .foregroundStyle(theme.secondaryText)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                        Spacer(minLength: 8)
-                        Toggle("", isOn: Binding(
-                            get: { limiter.isEnabled },
-                            set: { on in
-                                var n = limiter
-                                n.isEnabled = on
-                                n.sanitize()
-                                limiter = n
-                                UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                            }
-                        ))
-                        .labelsHidden()
-                        .tint(tint)
-                    }
-                    .padding(14)
-                    .glassCard(corner: 16)
+                    enableCard
+                    genreSection
+                    myPresetsSection
+                    advancedSection
 
-                    VStack(spacing: 14) {
-                        paramSlider(
-                            title: "Threshold",
-                            subtitle: "Gain reduction starts above this level",
-                            value: binding(\.thresholdDB),
-                            range: LimiterState.thresholdRange,
-                            format: { String(format: "%+.1f dB", $0) }
-                        )
-                        paramSlider(
-                            title: "Ratio",
-                            subtitle: ratioSubtitle,
-                            value: binding(\.ratio),
-                            range: LimiterState.ratioRange,
-                            format: { r in
-                                if r >= LimiterState.infiniteRatioDisplay - 0.05 { return "∞:1" }
-                                return String(format: "%.1f:1", r)
-                            }
-                        )
-                        paramSlider(
-                            title: "Attack",
-                            subtitle: "How fast peaks are caught",
-                            value: binding(\.attackMs),
-                            range: LimiterState.attackMsRange,
-                            format: { String(format: "%.1f ms", $0) }
-                        )
-                        paramSlider(
-                            title: "Release",
-                            subtitle: "How quickly level recovers",
-                            value: binding(\.releaseMs),
-                            range: LimiterState.releaseMsRange,
-                            format: { String(format: "%.0f ms", $0) }
-                        )
-                        paramSlider(
-                            title: "Post-gain",
-                            subtitle: "Makeup after limiting (−12…+12 dB)",
-                            value: binding(\.postGainDB),
-                            range: LimiterState.postGainRange,
-                            format: { String(format: "%+.1f dB", $0) }
-                        )
-                    }
-                    .padding(14)
-                    .glassCard(corner: 16)
-                    .opacity(limiter.isEnabled ? 1 : 0.45)
-                    .allowsHitTesting(limiter.isEnabled)
-
-                    Text("Raise post-gain if the track feels quieter after a low threshold. Dual-PEQ preamps stay for AutoEQ headroom — this makeup is only for the limiter.")
+                    Text("Runs after Target, Fine-Tune and Bass. Never edits your EQ bands. The ceiling is a hard output limit — nothing leaves this stage above it.")
                         .font(.app(size: 11, weight: .medium, design: .rounded))
                         .foregroundStyle(theme.tertiaryText)
                         .fixedSize(horizontal: false, vertical: true)
@@ -446,6 +413,7 @@ struct LimiterEditorSheet: View {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("Reset") {
                         limiter = .flat
+                        presetStore.selectedLimiterName = ""
                         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
                     }
                     .font(.app(size: 15, weight: .semibold, design: .rounded))
@@ -457,10 +425,386 @@ struct LimiterEditorSheet: View {
                         .foregroundStyle(theme.accent)
                 }
             }
+            .onReceive(Timer.publish(every: 0.05, on: .main, in: .common).autoconnect()) { _ in
+                guard limiter.isEnabled else {
+                    if meterGR != 0 { meterGR = 0 }
+                    return
+                }
+                let v = gainReduction()
+                // Rise instantly to the peak, decay ~150 ms — standard meter feel.
+                meterGR = v > meterGR ? v : meterGR * 0.82 + v * 0.18
+            }
         }
         .frostedBleedSheet(accent: tint)
         .presentationDetents([.fraction(0.55), .large])
         .presentationContentInteraction(.scrolls)
+        .alert("Save limiter preset", isPresented: $showSaveAlert) {
+            TextField("Name", text: $newPresetName)
+            Button("Save") {
+                guard let saved = presetStore.saveLimiterPreset(name: newPresetName, state: limiter) else { return }
+                limiter.isEnabled = true
+                onToast?("Saved “\(saved)”")
+                newPresetName = ""
+            }
+            Button("Cancel", role: .cancel) { newPresetName = "" }
+        } message: {
+            Text("Stores the current limiter settings so you can recall them or link them to headphones.")
+        }
+        .alert("Rename preset", isPresented: Binding(
+            get: { renameTarget != nil },
+            set: { if !$0 { renameTarget = nil } }
+        )) {
+            TextField("Name", text: $renameText)
+            Button("Rename") {
+                if let target = renameTarget {
+                    presetStore.renameLimiterPreset(target, to: renameText)
+                }
+                renameTarget = nil
+            }
+            Button("Cancel", role: .cancel) { renameTarget = nil }
+        }
+    }
+
+    // MARK: Enable + meter
+
+    private var enableCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Enable limiter")
+                        .font(.app(size: 15, weight: .bold, design: .rounded))
+                        .foregroundStyle(theme.primaryText)
+                    Text("Lookahead brickwall · after Target, Fine-Tune and Bass")
+                        .font(.app(size: 12, weight: .medium, design: .rounded))
+                        .foregroundStyle(theme.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 8)
+                Toggle("", isOn: Binding(
+                    get: { limiter.isEnabled },
+                    set: { on in
+                        var n = limiter
+                        n.isEnabled = on
+                        n.sanitize()
+                        limiter = n
+                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    }
+                ))
+                .labelsHidden()
+                .tint(tint)
+            }
+
+            if limiter.isEnabled {
+                gainReductionMeter
+            }
+        }
+        .padding(14)
+        .glassCard(corner: 16)
+    }
+
+    /// Horizontal gain-reduction meter. Fills right-to-left because gain
+    /// reduction pulls *down* from 0 dB — the bar shrinking the signal.
+    private var gainReductionMeter: some View {
+        let maxGR = 12.0
+        let fraction = min(1.0, max(0.0, meterGR / maxGR))
+        return VStack(alignment: .leading, spacing: 5) {
+            HStack {
+                Text("Gain reduction")
+                    .font(.app(size: 11, weight: .semibold, design: .rounded))
+                    .foregroundStyle(theme.secondaryText)
+                Spacer()
+                Text(meterGR < 0.05 ? "0.0 dB" : String(format: "−%.1f dB", meterGR))
+                    .font(.app(size: 11, weight: .bold, design: .rounded))
+                    .foregroundStyle(meterGR > 6 ? theme.danger : theme.primaryText)
+                    .monospacedDigit()
+            }
+            GeometryReader { geo in
+                ZStack(alignment: .trailing) {
+                    Capsule()
+                        .fill(theme.primaryText.opacity(0.08))
+                    Capsule()
+                        .fill(
+                            LinearGradient(
+                                colors: [tint, meterGR > 6 ? theme.danger : tint],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                        )
+                        .frame(width: max(0, geo.size.width * fraction))
+                }
+            }
+            .frame(height: 6)
+            .animation(.easeOut(duration: 0.08), value: fraction)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Gain reduction")
+        .accessibilityValue(String(format: "%.1f decibels", meterGR))
+    }
+
+    // MARK: Genre presets
+
+    private var genreSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            sectionLabel("Genre presets")
+            // Four columns rather than one row: at seven presets a single row
+            // leaves ~46pt per chip, which clips "Adoración" and crowds the
+            // 44pt minimum tap target. 4 × ~84pt keeps both intact.
+            LazyVGrid(columns: Self.genreColumns, spacing: 6) {
+                ForEach(LimiterGenre.allCases) { genre in
+                    let selected = activePresetName == genre.title
+                    Button {
+                        var s = genre.state
+                        s.isEnabled = true
+                        limiter = s
+                        presetStore.selectedLimiterName = genre.title
+                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    } label: {
+                        VStack(spacing: 4) {
+                            Image(systemName: genre.systemImage)
+                                .font(.app(size: 15, weight: .semibold))
+                            Text(genre.compactTitle)
+                                .font(.app(size: 10, weight: .bold, design: .rounded))
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.8)
+                        }
+                        .frame(maxWidth: .infinity, minHeight: 48)
+                        .foregroundStyle(selected ? theme.background : theme.primaryText)
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 8)
+                        .background(Capsule().fill(selected ? tint : theme.elevated))
+                        .overlay(
+                            Capsule().strokeBorder(
+                                selected ? Color.clear : theme.primaryText.opacity(0.08),
+                                lineWidth: 1
+                            )
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(genre.title)
+                    .accessibilityHint(genre.subtitle)
+                    .accessibilityAddTraits(selected ? .isSelected : [])
+                }
+            }
+
+            if let genre = LimiterGenre.allCases.first(where: { $0.title == activePresetName }) {
+                Text(genre.subtitle)
+                    .font(.app(size: 12, weight: .medium, design: .rounded))
+                    .foregroundStyle(theme.secondaryText)
+            }
+        }
+        .padding(14)
+        .glassCard(corner: 16)
+    }
+
+    // MARK: User presets
+
+    private var myPresetsSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            sectionLabel("My presets")
+
+            let mine = presetStore.userLimiterPresets
+            if mine.isEmpty {
+                Text("None yet. Dial in the sliders below, then save the result here.")
+                    .font(.app(size: 12, weight: .medium, design: .rounded))
+                    .foregroundStyle(theme.tertiaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                ForEach(mine) { preset in
+                    Menu {
+                        Button {
+                            limiter = preset.state
+                            presetStore.selectedLimiterName = preset.name
+                        } label: {
+                            Label("Load", systemImage: "arrow.down.circle")
+                        }
+                        Button {
+                            presetStore.saveLimiterPreset(name: preset.name, state: limiter)
+                            onToast?("Updated “\(preset.name)”")
+                        } label: {
+                            Label("Overwrite with current", systemImage: "square.and.arrow.down")
+                        }
+                        Button {
+                            renameText = preset.name
+                            renameTarget = preset
+                        } label: {
+                            Label("Rename", systemImage: "pencil")
+                        }
+                        Divider()
+                        Button(role: .destructive) {
+                            presetStore.deleteLimiterPreset(preset)
+                            onToast?("Deleted “\(preset.name)”")
+                        } label: {
+                            Label("Delete", systemImage: "trash")
+                        }
+                    } label: {
+                        GlassProfilePill(
+                            title: preset.name,
+                            subtitle: preset.state.summaryLabel,
+                            accent: tint,
+                            isSelected: activePresetName == preset.name,
+                            systemImage: preset.systemImage
+                        )
+                    }
+                }
+            }
+
+            Button {
+                newPresetName = suggestedPresetName()
+                showSaveAlert = true
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "plus.circle.fill")
+                        .font(.app(size: 15, weight: .semibold))
+                    Text("Save current as…")
+                        .font(.app(size: 14, weight: .bold, design: .rounded))
+                    Spacer()
+                }
+                .foregroundStyle(tint)
+                .frame(minHeight: 44)
+                .padding(.horizontal, 12)
+                .background(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(tint.opacity(0.12))
+                )
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Save current limiter settings as a preset")
+        }
+        .padding(14)
+        .glassCard(corner: 16)
+    }
+
+    /// Seed the save dialog with something meaningful rather than a blank field.
+    private func suggestedPresetName() -> String {
+        let base = activePresetName.isEmpty ? "My Limiter" : "\(activePresetName) Custom"
+        guard presetStore.limiterPreset(named: base) != nil else { return base }
+        var n = 2
+        while presetStore.limiterPreset(named: "\(base) \(n)") != nil { n += 1 }
+        return "\(base) \(n)"
+    }
+
+    // MARK: Parameters
+
+    private var advancedSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.22)) { showAdvanced.toggle() }
+            } label: {
+                HStack {
+                    Text("Fine controls")
+                        .font(.app(size: 13, weight: .bold, design: .rounded))
+                        .foregroundStyle(theme.primaryText)
+                    Spacer()
+                    Text(limiter.summaryLabel)
+                        .font(.app(size: 11, weight: .medium, design: .rounded))
+                        .foregroundStyle(theme.secondaryText)
+                    Image(systemName: showAdvanced ? "chevron.up" : "chevron.down")
+                        .font(.app(size: 12, weight: .bold))
+                        .foregroundStyle(theme.secondaryText)
+                }
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(showAdvanced ? "Hide fine controls" : "Show fine controls")
+
+            if showAdvanced {
+                VStack(spacing: 14) {
+                    paramSlider(
+                        title: "Ceiling",
+                        subtitle: "Hard output limit — nothing exceeds this",
+                        value: binding(\.ceilingDB),
+                        range: LimiterState.ceilingRange,
+                        format: { String(format: "%.1f dB", $0) }
+                    )
+                    paramSlider(
+                        title: "Threshold",
+                        subtitle: "Gain reduction starts above this level",
+                        value: binding(\.thresholdDB),
+                        range: LimiterState.thresholdRange,
+                        format: { String(format: "%+.1f dB", $0) }
+                    )
+                    paramSlider(
+                        title: "Ratio",
+                        subtitle: ratioSubtitle,
+                        value: binding(\.ratio),
+                        range: LimiterState.ratioRange,
+                        format: { r in
+                            if r >= LimiterState.infiniteRatioDisplay - 0.05 { return "∞:1" }
+                            return String(format: "%.1f:1", r)
+                        }
+                    )
+                    paramSlider(
+                        title: "Knee",
+                        subtitle: "Wider = compression eases in more gradually",
+                        value: binding(\.kneeDB),
+                        range: LimiterState.kneeRange,
+                        format: { $0 < 0.05 ? "Hard" : String(format: "%.1f dB", $0) }
+                    )
+                    paramSlider(
+                        title: "Attack",
+                        subtitle: "How fast peaks are caught (capped by lookahead)",
+                        value: binding(\.attackMs),
+                        range: LimiterState.attackMsRange,
+                        format: { String(format: "%.1f ms", $0) }
+                    )
+                    paramSlider(
+                        title: "Release",
+                        subtitle: "Base recovery time · stretches automatically on sustained loudness",
+                        value: binding(\.releaseMs),
+                        range: LimiterState.releaseMsRange,
+                        format: { String(format: "%.0f ms", $0) }
+                    )
+                    paramSlider(
+                        title: "Lookahead",
+                        subtitle: "Larger = more transparent, adds this much latency",
+                        value: binding(\.lookaheadMs),
+                        range: LimiterState.lookaheadMsRange,
+                        format: { String(format: "%.1f ms", $0) }
+                    )
+
+                    HStack(spacing: 12) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Auto makeup")
+                                .font(.app(size: 12, weight: .semibold, design: .rounded))
+                                .foregroundStyle(theme.secondaryText)
+                            Text(limiter.autoMakeup
+                                 ? String(format: "Deriving %+.1f dB from threshold and ratio", limiter.effectiveMakeupDB)
+                                 : "Set makeup manually below")
+                                .font(.app(size: 11, weight: .medium, design: .rounded))
+                                .foregroundStyle(theme.tertiaryText)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        Spacer(minLength: 8)
+                        Toggle("", isOn: Binding(
+                            get: { limiter.autoMakeup },
+                            set: { on in
+                                var n = limiter
+                                n.autoMakeup = on
+                                n.sanitize()
+                                limiter = n
+                            }
+                        ))
+                        .labelsHidden()
+                        .tint(tint)
+                    }
+
+                    if !limiter.autoMakeup {
+                        paramSlider(
+                            title: "Makeup",
+                            subtitle: "Gain after limiting · the ceiling still applies",
+                            value: binding(\.postGainDB),
+                            range: LimiterState.postGainRange,
+                            format: { String(format: "%+.1f dB", $0) }
+                        )
+                    }
+                }
+                .opacity(limiter.isEnabled ? 1 : 0.45)
+                .allowsHitTesting(limiter.isEnabled)
+            }
+        }
+        .padding(14)
+        .glassCard(corner: 16)
     }
 
     private var ratioSubtitle: String {
@@ -474,6 +818,14 @@ struct LimiterEditorSheet: View {
             return "Musical compression / soft limiting"
         }
         return "Gentle leveling"
+    }
+
+    private func sectionLabel(_ text: String) -> some View {
+        Text(text)
+            .font(.app(size: 12, weight: .bold, design: .rounded))
+            .foregroundStyle(theme.secondaryText)
+            .textCase(.uppercase)
+            .tracking(0.6)
     }
 
     private func binding(_ keyPath: WritableKeyPath<LimiterState, Double>) -> Binding<Double> {

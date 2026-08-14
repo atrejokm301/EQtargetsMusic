@@ -67,7 +67,7 @@ final class PlaybackDeck: @unchecked Sendable {
     let fineEQ: AVAudioUnitEQ
     /// Post-PEQ bass stage. 4 bands: shelf + peaking helpers.
     let bassEQ: AVAudioUnitEQ
-    /// Post-Bass dynamics (limiter). Apple AUDynamicsProcessor.
+    /// Post-Bass dynamics. Custom lookahead brickwall limiter (`EQTLimiterAudioUnit`).
     let limiter: AVAudioUnitEffect
     let mixer = AVAudioMixerNode()
 
@@ -2003,20 +2003,25 @@ extension AudioPlayerEngine {
 
     /// Map `LimiterState` onto the deck's post-Bass Dynamics Processor.
     private func applyLimiter(to deck: PlaybackDeck, processingEnabled: Bool) {
-        var params = LimiterDSP.unitParams(from: limiter)
+        var params = LimiterDSP.unitParams(from: limiter, sampleRate: sampleRate)
         if !processingEnabled {
             params.bypass = true
-            params.overallGain = 0
         }
         LimiterDSP.apply(params: params, to: deck.limiter)
 
         #if DEBUG
         if !params.bypass {
+            let makeup = self.limiter.effectiveMakeupDB
             playerLog.debug(
-                "Limiter thr=\(self.limiter.thresholdDB, format: .fixed(precision: 1))dB ratio=\(self.limiter.ratio, format: .fixed(precision: 1)) atk=\(self.limiter.attackMs, format: .fixed(precision: 1))ms rel=\(self.limiter.releaseMs, format: .fixed(precision: 0))ms post=\(self.limiter.postGainDB, format: .fixed(precision: 1))dB"
+                "Limiter ceil=\(self.limiter.ceilingDB, format: .fixed(precision: 1))dB thr=\(self.limiter.thresholdDB, format: .fixed(precision: 1))dB ratio=\(self.limiter.ratio, format: .fixed(precision: 1)) knee=\(self.limiter.kneeDB, format: .fixed(precision: 1))dB atk=\(self.limiter.attackMs, format: .fixed(precision: 1))ms rel=\(self.limiter.releaseMs, format: .fixed(precision: 0))ms look=\(self.limiter.lookaheadMs, format: .fixed(precision: 1))ms makeup=\(makeup, format: .fixed(precision: 1))dB"
             )
         }
         #endif
+    }
+
+    /// Live gain reduction on the active deck, in dB (positive). For metering.
+    var limiterGainReductionDB: Double {
+        LimiterDSP.gainReductionDB(of: activeDeck.limiter)
     }
 
     /// Map one EQLayerState onto one AVAudioUnitEQ (10 peaking bands + preamp).

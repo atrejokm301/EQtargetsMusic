@@ -701,14 +701,21 @@ final class EQPresetStore: ObservableObject {
     /// Snapshot of external outputs currently on the route (from the system).
     @Published private(set) var connectedDevices: [AudioRouteDevice] = []
 
+    /// Genre built-ins + the user's own limiter presets.
+    @Published var limiterPresets: [LimiterPreset] = []
+    /// Name of the limiter preset currently loaded, or "" once the user edits
+    /// a slider and the live state no longer matches any saved preset.
+    @Published var selectedLimiterName: String = ""
     private let userTargetsKey = "eqtargets.userTargetPresets"
     private let userFineTunesKey = "eqtargets.userFineTunePresets"
+    private let userLimitersKey = "eqtargets.userLimiterPresets.v1"
     private let deviceTargetsKey = "eqtargets.deviceTargetAssignments.v1"
     private let knownDevicesKey = "eqtargets.knownAudioDevices.v1"
     private var routeObserver: NSObjectProtocol?
 
     init() {
         loadPresets()
+        loadLimiterPresets()
         loadDeviceAssignments()
         loadKnownDevices()
         refreshConnectedDevices()
@@ -775,6 +782,81 @@ final class EQPresetStore: ObservableObject {
 
     func preset(named name: String) -> EQPreset? {
         targetPresets.first { $0.name == name }
+    }
+
+    // MARK: - Limiter presets
+
+    /// The shipped genres, in declaration order.
+    var builtInLimiterPresets: [LimiterPreset] {
+        limiterPresets.filter(\.isBuiltIn)
+    }
+
+    /// The user's own saved limiter presets.
+    var userLimiterPresets: [LimiterPreset] {
+        limiterPresets.filter { !$0.isBuiltIn }
+    }
+
+    func limiterPreset(named name: String) -> LimiterPreset? {
+        limiterPresets.first { $0.name == name }
+    }
+
+    /// Save (or overwrite) a user limiter preset. Built-in genre names are
+    /// reserved — saving over one creates "Name (2)" instead of shadowing it,
+    /// because the built-ins are what the genre chips resolve against.
+    @discardableResult
+    func saveLimiterPreset(name: String, state: LimiterState) -> String? {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        var finalName = trimmed
+        if limiterPresets.contains(where: { $0.isBuiltIn && $0.name == trimmed }) {
+            var n = 2
+            while limiterPresets.contains(where: { $0.name == "\(trimmed) (\(n))" }) { n += 1 }
+            finalName = "\(trimmed) (\(n))"
+        }
+
+        var saved = state.sanitized()
+        // A saved preset is meant to be used, so it always stores as enabled —
+        // otherwise recalling it appears to do nothing.
+        saved.isEnabled = true
+
+        if let idx = limiterPresets.firstIndex(where: { !$0.isBuiltIn && $0.name == finalName }) {
+            limiterPresets[idx].state = saved
+        } else {
+            limiterPresets.append(LimiterPreset(name: finalName, state: saved))
+        }
+        selectedLimiterName = finalName
+        saveUserLimiterPresets()
+        return finalName
+    }
+
+    func deleteLimiterPreset(_ preset: LimiterPreset) {
+        guard !preset.isBuiltIn else { return }
+        limiterPresets.removeAll { $0.id == preset.id }
+        if selectedLimiterName == preset.name {
+            selectedLimiterName = ""
+        }
+        saveUserLimiterPresets()
+    }
+
+    func renameLimiterPreset(_ preset: LimiterPreset, to newName: String) {
+        guard !preset.isBuiltIn else { return }
+        let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              !limiterPresets.contains(where: { $0.name == trimmed && $0.id != preset.id }),
+              let idx = limiterPresets.firstIndex(where: { $0.id == preset.id })
+        else { return }
+
+        let oldName = limiterPresets[idx].name
+        limiterPresets[idx].name = trimmed
+        if selectedLimiterName == oldName { selectedLimiterName = trimmed }
+        saveUserLimiterPresets()
+    }
+
+    /// Name of the preset whose parameters match `state`, or "" if none do.
+    /// Lets the UI keep a chip highlighted until the user actually diverges.
+    func limiterPresetName(matching state: LimiterState) -> String {
+        limiterPresets.first { $0.state.matchesParameters(of: state) }?.name ?? ""
     }
 
     // MARK: - Connected / known route devices
@@ -939,6 +1021,25 @@ final class EQPresetStore: ObservableObject {
         let userFine = fineTunePresets.filter { !$0.isSystemDefault }
         if let data = try? JSONEncoder().encode(userFine) {
             UserDefaults.standard.set(data, forKey: userFineTunesKey)
+        }
+    }
+
+    private func loadLimiterPresets() {
+        // Built-ins are always rebuilt from code, never persisted, so tuning a
+        // genre in a future release reaches users who already ran the app.
+        var presets = LimiterPreset.builtIns
+        if let data = UserDefaults.standard.data(forKey: userLimitersKey),
+           let user = try? JSONDecoder().decode([LimiterPreset].self, from: data) {
+            let builtInNames = Set(presets.map(\.name))
+            presets.append(contentsOf: user.filter { !$0.isBuiltIn && !builtInNames.contains($0.name) })
+        }
+        limiterPresets = presets
+    }
+
+    private func saveUserLimiterPresets() {
+        let user = limiterPresets.filter { !$0.isBuiltIn }
+        if let data = try? JSONEncoder().encode(user) {
+            UserDefaults.standard.set(data, forKey: userLimitersKey)
         }
     }
 
