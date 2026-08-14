@@ -61,23 +61,36 @@ enum PerformanceMemory {
         log.info("purged image/palette caches (\(reason, privacy: .public))")
     }
 
-    /// Larger IO buffer → fewer audio wakeups (main thermal lever after EQ bypass).
-    /// Cool stays snappy enough for dual-EQ; fair/heat step up quickly.
+    /// Larger IO buffer → fewer audio wakeups. This is the dominant power lever
+    /// in the whole app: waking the CPU every buffer period to pull six EQ units
+    /// and two mixers costs far more than the DSP arithmetic inside them.
+    ///
+    /// The cool case used to be 0.060. Nothing here needs that: this is a
+    /// playback-only app with no live input, so IO latency affects exactly one
+    /// thing — how quickly a control change becomes audible — and 80 ms is below
+    /// the threshold where a slider feels detached. Going 0.060 → 0.080 removes
+    /// a quarter of the audio wakeups for no perceptible cost.
+    ///
+    /// Note iOS clamps this to roughly 0.093 s on current hardware, so the
+    /// hotter rungs are requests rather than guarantees; the ladder still orders
+    /// correctly once clamped.
     static var preferredIOBufferDuration: TimeInterval {
-        if ProcessInfo.processInfo.isLowPowerModeEnabled { return 0.100 }
+        if ProcessInfo.processInfo.isLowPowerModeEnabled { return 0.120 }
         switch ProcessInfo.processInfo.thermalState {
-        case .serious, .critical: return 0.120
-        case .fair: return 0.080
-        default: return 0.060
+        case .serious, .critical: return 0.140
+        case .fair: return 0.100
+        default: return 0.080
         }
     }
 
+    /// Backgrounded, the screen is off and no control can be touched, so latency
+    /// stops mattering entirely — push every rung further out.
     static var preferredBackgroundIOBufferDuration: TimeInterval {
-        if ProcessInfo.processInfo.isLowPowerModeEnabled { return 0.140 }
+        if ProcessInfo.processInfo.isLowPowerModeEnabled { return 0.160 }
         switch ProcessInfo.processInfo.thermalState {
-        case .serious, .critical: return 0.160
-        case .fair: return 0.120
-        default: return 0.100
+        case .serious, .critical: return 0.180
+        case .fair: return 0.140
+        default: return 0.120
         }
     }
 

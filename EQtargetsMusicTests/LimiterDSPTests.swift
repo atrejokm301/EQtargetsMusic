@@ -212,6 +212,76 @@ final class LimiterDSPTests: XCTestCase {
         }
     }
 
+    // MARK: - Bypassed fast path
+    //
+    // While bypassed the core skips the detector, the per-sample log10/pow and
+    // the envelope, keeping only the delay line — measured 11.49 → 2.56 µs per
+    // 512-frame buffer. The risk that buys is that the detector goes blind, so
+    // these cover the seam rather than the saving.
+
+    func test_leavingBypass_catchesALoudPassageThatArrivesImmediately() {
+        // The detector missed everything written while bypassed. Those samples
+        // are still in the delay line and about to be emitted, so without
+        // priming the first lookahead window would escape unlimited.
+        var off = baseState()
+        off.isEnabled = false
+        var on = baseState()
+        on.isEnabled = true
+
+        let half = Int(sr * 0.5)
+        let core = makeCore(off, channels: 2)
+
+        // Quiet while bypassed — this is what parks it in the fast path.
+        var ql = sine(amplitude: 0.02, hz: 120, count: half)
+        var qr = ql
+        processStereo(core, &ql, &qr)
+
+        // Flip to active and hit it hard on the very next block.
+        core.update(LimiterCoefficients.make(from: on, sampleRate: sr))
+        var ll = sine(amplitude: 0.95, hz: 120, count: half)
+        var lr = ll
+        processStereo(core, &ll, &lr)
+
+        let ceiling = linear(on.ceilingDB)
+        XCTAssertLessThanOrEqual(peak(ll), ceiling * 1.02,
+                                 "a peak escaped the ceiling right after un-bypass")
+
+        // And it should match a core that was never bypassed at all.
+        let reference = makeCore(on, channels: 2)
+        var rl = sine(amplitude: 0.02, hz: 120, count: half)
+        var rr = rl
+        processStereo(reference, &rl, &rr)
+        var rl2 = sine(amplitude: 0.95, hz: 120, count: half)
+        var rr2 = rl2
+        processStereo(reference, &rl2, &rr2)
+
+        XCTAssertEqual(peak(ll), peak(rl2), accuracy: 0.01,
+                       "primed detector did not behave like one that never stopped")
+    }
+
+    func test_repeatedBypassToggling_neverOvershootsTheCeiling() {
+        var off = baseState()
+        off.isEnabled = false
+        var on = baseState()
+        on.isEnabled = true
+
+        let core = makeCore(off, channels: 2)
+        let ceiling = linear(on.ceilingDB)
+        let chunk = Int(sr * 0.25)
+
+        for round in 0 ..< 8 {
+            let enabled = round % 2 == 1
+            core.update(LimiterCoefficients.make(from: enabled ? on : off, sampleRate: sr))
+            var l = sine(amplitude: enabled ? 0.95 : 0.02, hz: 120, count: chunk)
+            var r = l
+            processStereo(core, &l, &r)
+            if enabled {
+                XCTAssertLessThanOrEqual(peak(l), ceiling * 1.02,
+                                         "ceiling breached on toggle round \(round)")
+            }
+        }
+    }
+
     func test_nodeBypassAndCoefficientBypassDoNotCancelEachOtherOut() {
         // Regression: `LimiterDSP.apply` sets `unit.bypass = false` on purpose
         // so the delay line keeps running and latency stays constant. An

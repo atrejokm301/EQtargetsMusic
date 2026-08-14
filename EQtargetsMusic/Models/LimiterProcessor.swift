@@ -530,6 +530,11 @@ final class LimiterDSPCore {
     /// Slow envelope of |gain reduction|, drives the program-dependent release.
     private var sustainedGR: Double = 0
 
+    /// True while the bypassed fast path is running, meaning the detector has
+    /// not been fed and must be primed from the delay line before the full path
+    /// can be trusted again. See `process`.
+    private var detectorIdle = false
+
     /// Most recent gain reduction in dB, as a positive number, for metering.
     private(set) var gainReductionDB: Double = 0
     /// Peak output level (dBFS) observed since the last meter read.
@@ -564,6 +569,7 @@ final class LimiterDSPCore {
         sustainedGR = 0
         gainReductionDB = 0
         outputPeakDB = -120
+        detectorIdle = false
         detector.reset()
     }
 
@@ -619,6 +625,52 @@ final class LimiterDSPCore {
         let makeupLin = c.bypass ? 1.0 : c.makeupLinear
         var maxGR = 0.0
         var peakOut: Float = 0
+
+        // ── Bypassed fast path ────────────────────────────────────────────────
+        //
+        // The delay line MUST keep running — latency is constant by contract, so
+        // switching the limiter on and off cannot change alignment. Everything
+        // else, though, provably cannot affect the output once the gain envelope
+        // has unwound: `targetDB` is pinned at 0, `makeupLin` is 1, and the
+        // ceiling clamp is skipped while bypassed. That leaves a `log10` and a
+        // `pow` per sample plus the detector deque, all computing a gain of
+        // exactly 1. Measured, a bypassed limiter cost ~90% of an active one,
+        // and both decks carry one — the idle deck's limiter was burning that
+        // permanently.
+        //
+        // The envelope is asymptotic, so it never reaches 0 exactly; below
+        // 0.0005 dB (a linear gain within 6e-5 of unity) it is snapped so the
+        // fast path is genuine bit-for-bit passthrough rather than nearly so.
+        if c.bypass, gainDB > -0.0005 {
+            gainDB = 0
+            sustainedGR = 0
+            detectorIdle = true
+
+            for n in 0 ..< frameCount {
+                let readIndex = (writeIndex - lookahead + delayCapacity) % delayCapacity
+                for ch in 0 ..< chCount {
+                    delay[ch * delayCapacity + writeIndex] = channels[ch][n]
+                    let y = delay[ch * delayCapacity + readIndex]
+                    channels[ch][n] = y
+                    let a = abs(y)
+                    if a > peakOut { peakOut = a }
+                }
+                writeIndex = (writeIndex + 1) % delayCapacity
+            }
+
+            gainReductionDB = 0
+            outputPeakDB = peakOut > 0 ? 20.0 * log10(Double(peakOut)) : -120
+            return
+        }
+
+        // Leaving the fast path: the detector has missed every sample that was
+        // written while it was skipped, so it would under-read the peaks already
+        // sitting in the delay line and let the first loud samples out past the
+        // ceiling. Those samples are still in the delay line, so replay them.
+        if detectorIdle {
+            primeDetector(lookahead: lookahead, channelCount: chCount)
+            detectorIdle = false
+        }
 
         for n in 0 ..< frameCount {
             // --- write incoming into the delay line, find the linked peak
@@ -681,6 +733,26 @@ final class LimiterDSPCore {
 
         gainReductionDB = maxGR
         outputPeakDB = peakOut > 0 ? 20.0 * log10(Double(peakOut)) : -120
+    }
+
+    /// Rebuild the sliding-peak window from the samples already in the delay
+    /// line, so the detector resumes with exactly the state it would have had if
+    /// it had been fed all along. O(lookahead) once per bypass→active edge —
+    /// a few hundred samples, paid on a user action, never in steady state.
+    private func primeDetector(lookahead: Int, channelCount chCount: Int) {
+        guard let delay else { return }
+        detector.reset()
+        let count = min(lookahead, delayCapacity)
+        var idx = (writeIndex - count + delayCapacity) % delayCapacity
+        for _ in 0 ..< count {
+            var linked: Float = 0
+            for ch in 0 ..< chCount {
+                let a = abs(delay[ch * delayCapacity + idx])
+                if a > linked { linked = a }
+            }
+            _ = detector.push(linked)
+            idx = (idx + 1) % delayCapacity
+        }
     }
 
     /// Convenience mono path for tests.

@@ -190,11 +190,19 @@ struct BassStyleEditorSheet: View {
 
     @Environment(\.grokTheme) private var theme
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
 
     /// Meter ballistics: instant rise, ~150 ms decay — same feel as the limiter's
     /// gain-reduction meter so the two read identically.
     @State private var meterBoost: Double = 0
     @State private var meterTrim: Double = 0
+
+    /// Poll only when there is something to show and someone to show it to.
+    /// Punch and Rumble drive the dynamic stage; the other styles leave the
+    /// kernel bypassed, so polling would just read zeros.
+    private var shouldPollMeter: Bool {
+        scenePhase == .active && bass.style.hasDynamics
+    }
 
     private var bassTint: Color { theme.accentSecondary }
 
@@ -344,18 +352,30 @@ struct BassStyleEditorSheet: View {
                         .foregroundStyle(theme.accent)
                 }
             }
-            .onReceive(Timer.publish(every: 0.05, on: .main, in: .common).autoconnect()) { _ in
-                // Only Punch and Rumble drive the dynamic stage; the others leave
-                // the kernel bypassed, so polling it would just read zeros.
-                guard bass.style.hasDynamics else {
-                    if meterBoost != 0 { meterBoost = 0 }
-                    if meterTrim != 0 { meterTrim = 0 }
+            // A cancellable poll rather than a Timer publisher: a publisher keeps
+            // firing while the sheet is merely *presented*, including with the
+            // screen off, which is exactly when a 20 Hz main-thread wakeup is
+            // least welcome. `.task(id:)` tears the loop down when the scene
+            // leaves foreground and rebuilds it on return.
+            .task(id: shouldPollMeter) {
+                guard shouldPollMeter else {
+                    meterBoost = 0
+                    meterTrim = 0
                     return
                 }
-                let boost = punchAttackBoost()
-                let trim = punchSustainTrim()
-                meterBoost = boost > meterBoost ? boost : meterBoost * 0.82 + boost * 0.18
-                meterTrim = trim > meterTrim ? trim : meterTrim * 0.82 + trim * 0.18
+                // Half rate when the phone is already warm. The decay constant
+                // is re-derived from the interval so the meter's fall time stays
+                // the same in wall-clock terms either way.
+                let intervalMs = PerformanceMemory.prefersCheapChrome ? 100 : 50
+                let decay = pow(0.82, Double(intervalMs) / 50.0)
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .milliseconds(intervalMs))
+                    if Task.isCancelled { return }
+                    let boost = punchAttackBoost()
+                    let trim = punchSustainTrim()
+                    meterBoost = boost > meterBoost ? boost : meterBoost * decay + boost * (1 - decay)
+                    meterTrim = trim > meterTrim ? trim : meterTrim * decay + trim * (1 - decay)
+                }
             }
         }
         .frostedBleedSheet(accent: bassTint)
@@ -556,6 +576,13 @@ struct LimiterEditorSheet: View {
     @EnvironmentObject private var presetStore: EQPresetStore
     @Environment(\.grokTheme) private var theme
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
+
+    /// Poll only while the limiter can actually move the meter, and only while
+    /// the app is foreground.
+    private var shouldPollMeter: Bool {
+        scenePhase == .active && limiter.isEnabled
+    }
 
     @State private var showSaveAlert = false
     @State private var newPresetName = ""
@@ -617,14 +644,22 @@ struct LimiterEditorSheet: View {
                         .foregroundStyle(theme.accent)
                 }
             }
-            .onReceive(Timer.publish(every: 0.05, on: .main, in: .common).autoconnect()) { _ in
-                guard limiter.isEnabled else {
-                    if meterGR != 0 { meterGR = 0 }
+            // Cancellable poll rather than a Timer publisher — see the same
+            // change in BassStyleEditorSheet for why.
+            .task(id: shouldPollMeter) {
+                guard shouldPollMeter else {
+                    meterGR = 0
                     return
                 }
-                let v = gainReduction()
+                let intervalMs = PerformanceMemory.prefersCheapChrome ? 100 : 50
                 // Rise instantly to the peak, decay ~150 ms — standard meter feel.
-                meterGR = v > meterGR ? v : meterGR * 0.82 + v * 0.18
+                let decay = pow(0.82, Double(intervalMs) / 50.0)
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .milliseconds(intervalMs))
+                    if Task.isCancelled { return }
+                    let v = gainReduction()
+                    meterGR = v > meterGR ? v : meterGR * decay + v * (1 - decay)
+                }
             }
         }
         .frostedBleedSheet(accent: tint)
