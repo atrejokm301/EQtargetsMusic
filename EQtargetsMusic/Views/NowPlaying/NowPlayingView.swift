@@ -136,7 +136,12 @@ struct NowPlayingView: View {
 
 private struct NowPlayingHeroCard: View {
     @EnvironmentObject private var player: AudioPlayerEngine
+    /// Needed to resolve the playing track back to its catalog copy before
+    /// setting a lane — the player holds its own Track value.
+    @EnvironmentObject private var library: LibraryStore
     @Environment(\.grokTheme) private var theme
+    /// Long-press the hero card to file whatever is playing.
+    @State private var addTargets: [Track] = []
 
     var body: some View {
         HStack(alignment: .center, spacing: 16) {
@@ -164,6 +169,21 @@ private struct NowPlayingHeroCard: View {
         .padding(16)
         .glassCard(corner: 20)
         .contentShape(Rectangle())
+        .contextMenu {
+            if let track = player.currentTrack {
+                Button {
+                    addTargets = [track]
+                } label: {
+                    Label("Add to Playlist…", systemImage: "text.badge.plus")
+                }
+                Divider()
+                // The moment you'd actually notice a wrong lane is while the
+                // song is playing — resolve it against the library copy so the
+                // override lands on the catalog track, not the player's copy.
+                LaneOverrideMenu(track: library.track(matching: track) ?? track)
+            }
+        }
+        .playlistAdding(pending: $addTargets)
         .gesture(
             DragGesture(minimumDistance: 30, coordinateSpace: .local)
                 .onEnded { value in

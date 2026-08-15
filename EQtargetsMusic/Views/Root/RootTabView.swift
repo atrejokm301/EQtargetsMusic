@@ -19,7 +19,7 @@ private enum RootTab: Hashable {
     case nowPlaying
     case music
     case artists
-    case albums
+    case library
     case search
 }
 
@@ -29,6 +29,7 @@ struct RootTabView: View {
     @StateObject private var library = LibraryStore()
     @StateObject private var player = AudioPlayerEngine()
     @StateObject private var presetStore = EQPresetStore()
+    @StateObject private var playlistStore = PlaylistStore()
 
     @AppStorage("app_accent_theme") private var accentThemeRaw: String = AppAccentTheme.blue.rawValue
     /// Smart BPM Shuffle: library/queue selection only (never touches audio graph).
@@ -131,10 +132,10 @@ struct RootTabView: View {
                     .tag(RootTab.artists)
 
                     NavigationStack {
-                        AlbumsListView()
+                        LibraryTabView()
                     }
-                    .tabItem { Label("Albums", systemImage: "square.stack.fill") }
-                    .tag(RootTab.albums)
+                    .tabItem { Label("Library", systemImage: "books.vertical.fill") }
+                    .tag(RootTab.library)
 
                     NavigationStack {
                         SearchView()
@@ -243,6 +244,7 @@ struct RootTabView: View {
         .environmentObject(library)
         .environmentObject(player)
         .environmentObject(presetStore)
+        .environmentObject(playlistStore)
         .preferredColorScheme(nil)
         .onChange(of: player.currentTrack?.id) { _, _ in
             refreshPlayerArtworkVisuals()
@@ -326,6 +328,7 @@ struct RootTabView: View {
             .environmentObject(player)
             .environmentObject(library)
             .environmentObject(presetStore)
+        .environmentObject(playlistStore)
             .environment(\.grokTheme, theme)
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.visible)

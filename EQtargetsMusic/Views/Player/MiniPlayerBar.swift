@@ -143,41 +143,10 @@ struct MiniPlayerBar: View {
 
     // MARK: - Liquid Glass
 
-    @ViewBuilder
+    /// Shared with every other floating bar — see `GlassCapsuleBackground`.
+    /// Kept as a property so the call site below is unchanged.
     private var glassChrome: some View {
-        if #available(iOS 26.0, *) {
-            Capsule(style: .continuous)
-                .fill(Color.clear)
-                .glassEffect(
-                    .regular
-                        .tint(theme.accent.opacity(isDark ? 0.18 : 0.12))
-                        .interactive(),
-                    in: Capsule(style: .continuous)
-                )
-        } else {
-            ZStack {
-                Capsule(style: .continuous)
-                    .fill(.ultraThinMaterial)
-                Capsule(style: .continuous)
-                    .fill(
-                        isDark
-                            ? Color.white.opacity(0.06)
-                            : Color.white.opacity(0.35)
-                    )
-                Capsule(style: .continuous)
-                    .strokeBorder(
-                        LinearGradient(
-                            colors: [
-                                Color.white.opacity(isDark ? 0.22 : 0.55),
-                                Color.white.opacity(isDark ? 0.04 : 0.12)
-                            ],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        ),
-                        lineWidth: 0.6
-                    )
-            }
-        }
+        GlassCapsuleBackground()
     }
 
     /// Thin edge rail flush to the bottom of the glass pill (Apple Music energy).

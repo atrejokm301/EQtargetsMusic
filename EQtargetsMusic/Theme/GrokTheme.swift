@@ -308,9 +308,65 @@ extension EnvironmentValues {
     }
 }
 
+/// The app's floating-glass capsule — originally the mini player's chrome,
+/// factored out so any floating bar reads as the *same* material instead of
+/// approximating it. Cards use `glassCard`; anything that hovers over content
+/// (mini player, selection bars) uses this.
+struct GlassCapsuleBackground: View {
+    /// Defaults to the theme accent, matching the mini player.
+    var tint: Color?
+
+    @Environment(\.grokTheme) private var theme
+    @Environment(\.colorScheme) private var scheme
+
+    private var isDark: Bool { scheme == .dark }
+
+    var body: some View {
+        let base = tint ?? theme.accent
+        if #available(iOS 26.0, *) {
+            Capsule(style: .continuous)
+                .fill(Color.clear)
+                .glassEffect(
+                    .regular
+                        .tint(base.opacity(isDark ? 0.18 : 0.12))
+                        .interactive(),
+                    in: Capsule(style: .continuous)
+                )
+        } else {
+            ZStack {
+                Capsule(style: .continuous)
+                    .fill(.ultraThinMaterial)
+                Capsule(style: .continuous)
+                    .fill(isDark ? Color.white.opacity(0.06) : Color.white.opacity(0.35))
+                Capsule(style: .continuous)
+                    .strokeBorder(
+                        LinearGradient(
+                            colors: [
+                                Color.white.opacity(isDark ? 0.22 : 0.55),
+                                Color.white.opacity(isDark ? 0.04 : 0.12)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        lineWidth: 0.6
+                    )
+            }
+        }
+    }
+}
+
 extension View {
     func glassCard(corner: CGFloat = 20) -> some View {
         modifier(GlassCard(corner: corner))
+    }
+
+    /// Floating glass capsule with the mini player's shape and shadows.
+    func glassCapsule(tint: Color? = nil, isDark: Bool) -> some View {
+        self
+            .background { GlassCapsuleBackground(tint: tint) }
+            .clipShape(Capsule(style: .continuous))
+            .shadow(color: .black.opacity(isDark ? 0.35 : 0.12), radius: 16, y: 6)
+            .shadow(color: .black.opacity(isDark ? 0.18 : 0.06), radius: 4, y: 1)
     }
 
     /// Frosted glass sheet chrome — content behind bleeds through (Settings, Crossfade, pickers).

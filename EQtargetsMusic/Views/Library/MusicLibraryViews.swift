@@ -34,9 +34,29 @@ struct MusicListView: View {
     @EnvironmentObject private var player: AudioPlayerEngine
     @Environment(\.grokTheme) private var theme
 
+    @EnvironmentObject private var playlists: PlaylistStore
+
     @State private var showFileImporter = false
     @State private var showFolderImporter = false
     @AppStorage("eqtargets.musicSortMode") private var sortModeRaw: String = MusicSortMode.title.rawValue
+
+    /// Multi-select state. `selection` holds track ids; it is cleared whenever
+    /// select mode is left so a stale set can never be filed into a playlist.
+    @State private var isSelecting = false
+    @State private var selection = Set<UUID>()
+    /// Tracks queued for the add sheet — either one from a context menu or the
+    /// current multi-selection. Non-empty drives the sheet (see `playlistAdding`).
+    @State private var addTargets: [Track] = []
+
+    private func beginAdd(_ tracks: [Track]) {
+        guard !tracks.isEmpty else { return }
+        addTargets = tracks
+    }
+
+    private func endSelecting() {
+        isSelecting = false
+        selection.removeAll()
+    }
 
     private var sortMode: MusicSortMode {
         MusicSortMode(rawValue: sortModeRaw) ?? .title
@@ -79,7 +99,7 @@ struct MusicListView: View {
             if library.tracks.isEmpty {
                 emptyState
             } else {
-                List {
+                List(selection: $selection) {
                     ForEach(sortedTracks) { track in
                         Button {
                             let list = sortedTracks
@@ -108,6 +128,12 @@ struct MusicListView: View {
                                 player.addToQueue(track)
                             } label: {
                                 Label("Add to Queue", systemImage: "text.append")
+                            }
+                            Divider()
+                            Button {
+                                beginAdd([track])
+                            } label: {
+                                Label("Add to Playlist…", systemImage: "text.badge.plus")
                             }
                             Divider()
                             LaneOverrideMenu(track: track)
@@ -141,12 +167,35 @@ struct MusicListView: View {
                 .miniPlayerScrollRunway(hasTrack: player.currentTrack != nil)
                 // Faster list scrolling — fewer offscreen views retained.
                 .environment(\.defaultMinListRowHeight, 56)
+                // Edit mode is what turns row taps into selection; without it
+                // the row Buttons swallow the tap and nothing gets selected.
+                .environment(\.editMode, .constant(isSelecting ? EditMode.active : EditMode.inactive))
             }
         }
+        .safeAreaInset(edge: .bottom) {
+            if isSelecting {
+                SelectionActionBar(count: selection.count, noun: "songs") {
+                    endSelecting()
+                } onAdd: {
+                    // Resolve ids against the sorted list so the playlist keeps
+                    // the order on screen, not Set iteration order.
+                    beginAdd(sortedTracks.filter { selection.contains($0.id) })
+                    endSelecting()
+                }
+            }
+        }
+        .playlistAdding(pending: $addTargets)
         // Solid black behind lists (blur blobs are expensive while scrolling).
         .background { theme.background.ignoresSafeArea() }
         .grokStyleNavigationChrome(title: "Music") {
             Menu {
+                Button {
+                    selection.removeAll()
+                    isSelecting = true
+                } label: {
+                    Label("Select Songs…", systemImage: "checkmark.circle")
+                }
+                Divider()
                 Section("Sort by") {
                     ForEach(MusicSortMode.allCases) { mode in
                         Button {
@@ -174,6 +223,11 @@ struct MusicListView: View {
                     Task { await library.rescan() }
                 } label: {
                     Label("Rescan Library", systemImage: "arrow.clockwise")
+                }
+                Button {
+                    Task { await library.repairAlbumTrackOrderMetadata() }
+                } label: {
+                    Label("Fix Album Order", systemImage: "list.number")
                 }
                 Button {
                     Task { await library.analyzeMissingBPMs() }
@@ -268,8 +322,25 @@ struct ArtistsListView: View {
     @EnvironmentObject private var player: AudioPlayerEngine
     @Environment(\.grokTheme) private var theme
 
+    /// Artist ids — whole discographies are the unit here.
+    @State private var isSelecting = false
+    @State private var selection = Set<String>()
+    @State private var addTargets: [Track] = []
+
+    /// An artist's tracks album by album, each album in playback order, so a
+    /// filed discography reads as albums rather than a title-sorted jumble.
+    private func tracks(for artist: ArtistGroup) -> [Track] {
+        artist.albums.flatMap { $0.tracks.sorted(by: LibraryStore.albumPlaybackOrder) }
+    }
+
+    private var selectedTracks: [Track] {
+        library.artistGroups
+            .filter { selection.contains($0.id) }
+            .flatMap { tracks(for: $0) }
+    }
+
     var body: some View {
-        List {
+        List(selection: $selection) {
             ForEach(library.artistGroups) { artist in
                 NavigationLink {
                     ArtistDetailView(artist: artist)
@@ -290,6 +361,13 @@ struct ArtistsListView: View {
                     .padding(.vertical, 4)
                 }
                 .listRowBackground(Color.clear)
+                .contextMenu {
+                    Button {
+                        addTargets = tracks(for: artist)
+                    } label: {
+                        Label("Add Artist to Playlist…", systemImage: "text.badge.plus")
+                    }
+                }
                 .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                     Button(role: .destructive) {
                         library.deleteArtist(artist)
@@ -318,6 +396,25 @@ struct ArtistsListView: View {
         .scrollContentBackground(.hidden)
         .grokScrollEdgeBlur()
         .miniPlayerScrollRunway(hasTrack: player.currentTrack != nil)
+        .environment(\.editMode, .constant(isSelecting ? EditMode.active : EditMode.inactive))
+        .safeAreaInset(edge: .top) {
+            if !isSelecting {
+                ListActionHeader(selectTitle: "Select Artists") { selection.removeAll(); isSelecting = true }
+            }
+        }
+        .safeAreaInset(edge: .bottom) {
+            if isSelecting {
+                SelectionActionBar(count: selection.count, noun: "artists") {
+                    isSelecting = false
+                    selection.removeAll()
+                } onAdd: {
+                    addTargets = selectedTracks
+                    isSelecting = false
+                    selection.removeAll()
+                }
+            }
+        }
+        .playlistAdding(pending: $addTargets)
         .background { theme.background.ignoresSafeArea() }
         .grokStyleNavigationChrome(title: "Artists")
     }
@@ -344,8 +441,17 @@ struct ArtistDetailView: View {
     @EnvironmentObject private var player: AudioPlayerEngine
     @Environment(\.grokTheme) private var theme
 
+    @State private var isSelecting = false
+    @State private var selection = Set<UUID>()
+    @State private var addTargets: [Track] = []
+
+    /// Album by album, each in playback order — the order shown on screen.
+    private var allTracks: [Track] {
+        artist.albums.flatMap { $0.tracks.sorted(by: LibraryStore.albumPlaybackOrder) }
+    }
+
     var body: some View {
-        List {
+        List(selection: $selection) {
             ForEach(artist.albums) { album in
                 Section {
                     let ordered = album.tracks.sorted(by: LibraryStore.albumPlaybackOrder)
@@ -360,6 +466,15 @@ struct ArtistDetailView: View {
                             )
                         }
                         .listRowBackground(Color.clear)
+                        .contextMenu {
+                            Button {
+                                addTargets = [track]
+                            } label: {
+                                Label("Add to Playlist…", systemImage: "text.badge.plus")
+                            }
+                            Divider()
+                            LaneOverrideMenu(track: track)
+                        }
                         .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                             Button(role: .destructive) {
                                 library.deleteTrack(track)
@@ -405,6 +520,29 @@ struct ArtistDetailView: View {
         .scrollContentBackground(.hidden)
         .grokScrollEdgeBlur()
         .miniPlayerScrollRunway(hasTrack: player.currentTrack != nil)
+        .environment(\.editMode, .constant(isSelecting ? EditMode.active : EditMode.inactive))
+        .safeAreaInset(edge: .top) {
+            if !isSelecting {
+                ListActionHeader(
+                    addAllTitle: "Add All",
+                    onAddAll: { addTargets = allTracks },
+                    selectTitle: "Select Songs"
+                ) { selection.removeAll(); isSelecting = true }
+            }
+        }
+        .safeAreaInset(edge: .bottom) {
+            if isSelecting {
+                SelectionActionBar(count: selection.count, noun: "songs") {
+                    isSelecting = false
+                    selection.removeAll()
+                } onAdd: {
+                    addTargets = allTracks.filter { selection.contains($0.id) }
+                    isSelecting = false
+                    selection.removeAll()
+                }
+            }
+        }
+        .playlistAdding(pending: $addTargets)
         .background { theme.background.ignoresSafeArea() }
         // Keep hamburger available on detail (back + menu); users expect Settings from album art flows.
         .grokStyleNavigationChrome(title: artist.name, showsBack: true, showsMenu: true) {
@@ -436,13 +574,45 @@ struct ArtistDetailView: View {
 
 // MARK: - Albums
 
+/// Installs the Albums nav chrome only when the view owns its screen. Written as
+/// a modifier rather than an `if` in the body so both branches keep the same
+/// view identity — an `if` here would tear down and rebuild the whole list.
+private struct OptionalAlbumsChrome: ViewModifier {
+    let embedded: Bool
+
+    func body(content: Content) -> some View {
+        if embedded {
+            content
+        } else {
+            content.grokStyleNavigationChrome(title: "Albums")
+        }
+    }
+}
+
 struct AlbumsListView: View {
+    /// True when hosted inside the Library tab, which installs its own nav
+    /// chrome — a second one here would fight it for the title.
+    var embedded = false
+
     @EnvironmentObject private var library: LibraryStore
     @EnvironmentObject private var player: AudioPlayerEngine
     @Environment(\.grokTheme) private var theme
 
+    /// Album ids (artist|album), not tracks — whole albums are the unit here.
+    @State private var isSelecting = false
+    @State private var selection = Set<String>()
+    @State private var addTargets: [Track] = []
+
+    /// Tracks for the chosen albums, each in album playback order, albums kept
+    /// in the order shown on screen rather than Set order.
+    private var selectedTracks: [Track] {
+        library.albumGroups
+            .filter { selection.contains($0.id) }
+            .flatMap { $0.tracks.sorted(by: LibraryStore.albumPlaybackOrder) }
+    }
+
     var body: some View {
-        List {
+        List(selection: $selection) {
             // Stable identity: artist|album — equal titles no longer fight over one row.
             ForEach(library.albumGroups) { album in
                 NavigationLink {
@@ -464,6 +634,13 @@ struct AlbumsListView: View {
                     .padding(.vertical, 4)
                 }
                 .listRowBackground(Color.clear)
+                .contextMenu {
+                    Button {
+                        addTargets = album.tracks.sorted(by: LibraryStore.albumPlaybackOrder)
+                    } label: {
+                        Label("Add Album to Playlist…", systemImage: "text.badge.plus")
+                    }
+                }
                 .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                     Button(role: .destructive) {
                         library.deleteAlbum(album)
@@ -492,8 +669,27 @@ struct AlbumsListView: View {
         .scrollContentBackground(.hidden)
         .grokScrollEdgeBlur()
         .miniPlayerScrollRunway(hasTrack: player.currentTrack != nil)
+        .environment(\.editMode, .constant(isSelecting ? EditMode.active : EditMode.inactive))
+        .safeAreaInset(edge: .top) {
+            if !isSelecting {
+                ListActionHeader(selectTitle: "Select Albums") { selection.removeAll(); isSelecting = true }
+            }
+        }
+        .safeAreaInset(edge: .bottom) {
+            if isSelecting {
+                SelectionActionBar(count: selection.count, noun: "albums") {
+                    isSelecting = false
+                    selection.removeAll()
+                } onAdd: {
+                    addTargets = selectedTracks
+                    isSelecting = false
+                    selection.removeAll()
+                }
+            }
+        }
+        .playlistAdding(pending: $addTargets)
         .background { theme.background.ignoresSafeArea() }
-        .grokStyleNavigationChrome(title: "Albums")
+        .modifier(OptionalAlbumsChrome(embedded: embedded))
     }
 
     @ViewBuilder
@@ -516,13 +712,17 @@ struct AlbumDetailView: View {
     @EnvironmentObject private var player: AudioPlayerEngine
     @Environment(\.grokTheme) private var theme
 
+    @State private var isSelecting = false
+    @State private var selection = Set<UUID>()
+    @State private var addTargets: [Track] = []
+
     /// Always re-apply album playback order (tags + filename) so stale groups can’t A–Z live sets.
     private var orderedTracks: [Track] {
         album.tracks.sorted(by: LibraryStore.albumPlaybackOrder)
     }
 
     var body: some View {
-        List {
+        List(selection: $selection) {
             ForEach(Array(orderedTracks.enumerated()), id: \.element.id) { index, track in
                 Button {
                     player.play(tracks: orderedTracks, startAt: index)
@@ -534,6 +734,15 @@ struct AlbumDetailView: View {
                     )
                 }
                 .listRowBackground(Color.clear)
+                .contextMenu {
+                    Button {
+                        addTargets = [track]
+                    } label: {
+                        Label("Add to Playlist…", systemImage: "text.badge.plus")
+                    }
+                    Divider()
+                    LaneOverrideMenu(track: track)
+                }
                 .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                     Button(role: .destructive) {
                         library.deleteTrack(track)
@@ -561,6 +770,29 @@ struct AlbumDetailView: View {
         .scrollContentBackground(.hidden)
         .grokScrollEdgeBlur()
         .miniPlayerScrollRunway(hasTrack: player.currentTrack != nil)
+        .environment(\.editMode, .constant(isSelecting ? EditMode.active : EditMode.inactive))
+        .safeAreaInset(edge: .top) {
+            if !isSelecting {
+                ListActionHeader(
+                    addAllTitle: "Add Album",
+                    onAddAll: { addTargets = orderedTracks },
+                    selectTitle: "Select Songs"
+                ) { selection.removeAll(); isSelecting = true }
+            }
+        }
+        .safeAreaInset(edge: .bottom) {
+            if isSelecting {
+                SelectionActionBar(count: selection.count, noun: "songs") {
+                    isSelecting = false
+                    selection.removeAll()
+                } onAdd: {
+                    addTargets = orderedTracks.filter { selection.contains($0.id) }
+                    isSelecting = false
+                    selection.removeAll()
+                }
+            }
+        }
+        .playlistAdding(pending: $addTargets)
         .background { theme.background.ignoresSafeArea() }
         .grokStyleNavigationChrome(title: album.name, showsBack: true, showsMenu: true) {
             Button(role: .destructive) {
@@ -584,6 +816,9 @@ struct SearchView: View {
     @Environment(\.grokTheme) private var theme
 
     @State private var query = ""
+    @State private var isSelecting = false
+    @State private var selection = Set<UUID>()
+    @State private var addTargets: [Track] = []
 
     private var results: [Track] {
         library.search(query)
@@ -670,6 +905,12 @@ struct SearchView: View {
                             .listRowBackground(Color.clear)
                             .contextMenu {
                                 Button {
+                                    addTargets = [track]
+                                } label: {
+                                    Label("Add to Playlist…", systemImage: "text.badge.plus")
+                                }
+                                Divider()
+                                Button {
                                     player.playNow(track)
                                 } label: {
                                     Label("Play Now", systemImage: "play.fill")
@@ -684,6 +925,8 @@ struct SearchView: View {
                                 } label: {
                                     Label("Add to Queue", systemImage: "text.append")
                                 }
+                                Divider()
+                                LaneOverrideMenu(track: track)
                             }
                             .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                                 Button(role: .destructive) {
@@ -715,7 +958,38 @@ struct SearchView: View {
             }
         }
         .background { theme.background.ignoresSafeArea() }
-        .grokStyleNavigationChrome(title: "Search")
+        .environment(\.editMode, .constant(isSelecting ? EditMode.active : EditMode.inactive))
+        .safeAreaInset(edge: .bottom) {
+            if isSelecting {
+                SelectionActionBar(count: selection.count, noun: "songs") {
+                    isSelecting = false
+                    selection.removeAll()
+                } onAdd: {
+                    addTargets = results.filter { selection.contains($0.id) }
+                    isSelecting = false
+                    selection.removeAll()
+                }
+            }
+        }
+        .playlistAdding(pending: $addTargets)
+        .grokStyleNavigationChrome(title: "Search") {
+            Button {
+                if isSelecting {
+                    isSelecting = false
+                    selection.removeAll()
+                } else {
+                    selection.removeAll()
+                    isSelecting = true
+                }
+            } label: {
+                Image(systemName: isSelecting ? "checkmark.circle.fill" : "checkmark.circle")
+                    .font(.app(size: 18, weight: .semibold))
+                    .foregroundStyle(theme.accent)
+                    .frame(width: 40, height: 40)
+                    .contentShape(Rectangle())
+            }
+            .accessibilityLabel(isSelecting ? "Done selecting" : "Select songs")
+        }
     }
 }
 
@@ -732,8 +1006,12 @@ struct LaneOverrideMenu: View {
     let track: Track
     @EnvironmentObject private var library: LibraryStore
 
+    /// Read the override from the library's copy, not from the Track value the
+    /// list handed us — the queue and Now Playing hold their own copies, which
+    /// go stale the moment a lane is set somewhere else.
     private var current: TempoLane? {
-        track.laneOverrideRaw.flatMap(TempoLane.init(rawValue:))
+        let live = library.track(matching: track) ?? track
+        return live.laneOverrideRaw.flatMap(TempoLane.init(rawValue:))
     }
 
     var body: some View {

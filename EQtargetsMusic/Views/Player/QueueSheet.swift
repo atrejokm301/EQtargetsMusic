@@ -103,6 +103,8 @@ struct QueueSheet: View {
 
     /// Local edit mode for reorder only — must stay inactive for swipe-to-delete.
     @State private var isReordering = false
+    /// Non-empty presents the add-to-playlist sheet (see `playlistAdding`).
+    @State private var addTargets: [Track] = []
 
     private var upNext: [Track] { player.upNext }
     private var editsBlocked: Bool { player.isTransitioning }
@@ -174,6 +176,15 @@ struct QueueSheet: View {
                             .buttonStyle(.plain)
                             .listRowBackground(upNextPill)
                             .listRowInsets(EdgeInsets(top: 4, leading: 12, bottom: 4, trailing: 12))
+                            .contextMenu {
+                                Button {
+                                    addTargets = [track]
+                                } label: {
+                                    Label("Add to Playlist…", systemImage: "text.badge.plus")
+                                }
+                                Divider()
+                                LaneOverrideMenu(track: track)
+                            }
                             .swipeActions(edge: .trailing, allowsFullSwipe: !editsBlocked && !isReordering) {
                                 Button(role: .destructive) {
                                     guard !editsBlocked else { return }
@@ -273,6 +284,7 @@ struct QueueSheet: View {
         }
         .environment(\.grokTheme, queueTheme)
         .preferredColorScheme(.dark)
+        .playlistAdding(pending: $addTargets)
     }
 
     /// Soft modern “pill” under Now Playing — continuous corners, no boxy slab.
