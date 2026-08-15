@@ -36,7 +36,12 @@ final class LibraryStore: ObservableObject {
     nonisolated static let maxBPMAnalysesPerScan = 12
     /// Bump when detector improves — re-runs tracks that were “checked” but got no BPM.
     /// v5 = energy-flux lean detector (battery/thermal pass).
-    private static let bpmEngineVersion = 5
+    /// v6 = octave decided from the onset envelope + bimodal worship prior.
+    /// v7 = band-split log-flux envelope + 10 ms lags + felt-octave from
+    ///      low-band offbeat support (ground-truthed against 12 labelled
+    ///      library songs). Full library re-analysis — earlier values are
+    ///      wrong in both directions; see `applyBPMEngineMigrationIfNeeded`.
+    private static let bpmEngineVersion = 7
     private static let bpmEngineVersionKey = "eqtargets.bpmEngineVersion"
 
     static let supportedExtensions: Set<String> = [
@@ -95,6 +100,12 @@ final class LibraryStore: ObservableObject {
         if tracks.isEmpty {
             // Empty catalog file or first install — one folder scan only when Music dir may have files.
             await rescan()
+            // A fresh import used to stop here, which is why deleting and
+            // re-adding a library came back alphabetical: the scan's fast
+            // metadata read misses track numbers on files whose tags don't use
+            // the standard identifiers, and only this pass does the deeper
+            // heuristic scan plus filename inference.
+            await repairAlbumTrackOrderMetadata()
         } else {
             // Repair disc/track order for existing libraries (nil tags → alphabetical albums).
             await repairAlbumTrackOrderMetadata()
@@ -239,20 +250,23 @@ final class LibraryStore: ObservableObject {
         }
     }
 
-    /// When the detector is upgraded, re-open tracks that were marked checked with no BPM.
+    /// When the detector is upgraded, re-open tracks it may now read differently.
     private func applyBPMEngineMigrationIfNeeded() {
         let stored = UserDefaults.standard.integer(forKey: Self.bpmEngineVersionKey)
         guard stored < Self.bpmEngineVersion else { return }
         var next = tracks
         var reset = 0
         for i in next.indices {
-            // Re-run anything without a usable tempo. Tag BPMs keep hasBPM and stay.
-            if !next[i].hasBPM {
+            // v7 = band-split detector: earlier values are wrong in *both*
+            // directions (ballads doubled, dense júbilo halved) and nothing
+            // stored says which — so everything re-analyzes. The value must be
+            // cleared too, not just re-opened: `analyzeMissingBPMs` never
+            // overwrites an existing valid BPM, which made v6's
+            // re-open-without-clear a silent no-op — analysis ran, result
+            // discarded. (Cost: the rare tag BPM is redetected as well.)
+            if next[i].bpmChecked || next[i].bpm != nil {
                 next[i].bpmChecked = false
-                // Clear garbage values outside the usable band.
-                if let b = next[i].bpm, !(b.isFinite && b > 20 && b < 400) {
-                    next[i].bpm = nil
-                }
+                next[i].bpm = nil
                 reset += 1
             }
         }
@@ -638,6 +652,13 @@ final class LibraryStore: ObservableObject {
         statusMessage = "Collecting files…"
         defer { isScanning = false }
 
+        // Wait for the catalog decode before deciding anything from `tracks`:
+        // an import that lands mid-load would see an empty library (wrong branch
+        // below) and then get overwritten when the decode finishes.
+        if let catalogLoadTask {
+            await catalogLoadTask.value
+        }
+
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         let musicDir = docs.appendingPathComponent("Music", isDirectory: true)
         try? FileManager.default.createDirectory(at: musicDir, withIntermediateDirectories: true)
@@ -677,6 +698,10 @@ final class LibraryStore: ObservableObject {
 
         statusMessage = "Importing 0/\(total)…"
         var imported = 0
+        /// Files this import put in (or found already sitting in) Music/ — the only
+        /// ones that need a metadata read afterwards.
+        var touched: [URL] = []
+        touched.reserveCapacity(total)
 
         for (i, url) in fileURLs.enumerated() {
             if i % 25 == 0 {
@@ -688,25 +713,27 @@ final class LibraryStore: ObservableObject {
             let childAccess = SecurityScopedAccess.startIfNeeded(url)
             defer { SecurityScopedAccess.stopIfNeeded(url, didStart: childAccess) }
 
-            let destName = uniqueDestName(for: url, in: musicDir)
-            let dest = musicDir.appendingPathComponent(destName)
-            do {
-                if FileManager.default.fileExists(atPath: dest.path) {
-                    // Same name already present — skip copy; rescan will index it.
-                    // Prefer updating from source only when sizes differ (true new file collision).
-                    if let srcSize = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize,
-                       let dstSize = (try? dest.resourceValues(forKeys: [.fileSizeKey]))?.fileSize,
-                       srcSize != dstSize {
-                        let alt = uniqueDestName(for: url, in: musicDir)
-                        let altDest = musicDir.appendingPathComponent(alt)
-                        if !FileManager.default.fileExists(atPath: altDest.path) {
-                            try FileManager.default.copyItem(at: url, to: altDest)
-                        }
-                    }
+            // Re-picking a file/folder already in the library must not copy it again.
+            // `uniqueDestName` always hands back a free name, so copying unconditionally
+            // produced "song 2.mp3" duplicates of the whole library on a repeat import.
+            let sameName = musicDir.appendingPathComponent(url.lastPathComponent)
+            if FileManager.default.fileExists(atPath: sameName.path) {
+                let srcSize = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize
+                let dstSize = (try? sameName.resourceValues(forKeys: [.fileSizeKey]))?.fileSize
+                if srcSize == nil || dstSize == nil || srcSize == dstSize {
+                    // Already present — index it only if the catalog somehow missed it.
+                    touched.append(sameName)
                     imported += 1
                     continue
                 }
+                // Same name, different bytes → genuine collision, fall through and copy.
+            }
+
+            let destName = uniqueDestName(for: url, in: musicDir)
+            let dest = musicDir.appendingPathComponent(destName)
+            do {
                 try FileManager.default.copyItem(at: url, to: dest)
+                touched.append(dest)
                 imported += 1
             } catch {
                 // Fallback: bookmark only (no copy)
@@ -725,9 +752,74 @@ final class LibraryStore: ObservableObject {
             }
         }
 
-        statusMessage = "Imported \(imported). Building library…"
-        await rescan()
-        statusMessage = "\(tracks.count) tracks"
+        // Adding one song used to cost a full `rescan()`, which re-opens an AVURLAsset
+        // and re-reads metadata for *every* file already in the catalog. Index only the
+        // files this import touched. First import (empty catalog) still folder-scans so
+        // anything already sitting in Music/ gets picked up.
+        if tracks.isEmpty {
+            statusMessage = "Imported \(imported). Building library…"
+            await rescan()
+        } else {
+            await indexNewFiles(touched, relativeTo: docs)
+        }
+        statusMessage = "\(tracks.count) track\(tracks.count == 1 ? "" : "s")"
+    }
+
+    /// Read metadata for just-imported files and append them to the catalog.
+    /// Uses the same `metadataTrack` path as `rescan()` — only the file set differs,
+    /// so track/disc/BPM tag handling is identical. Files already in the catalog
+    /// (matched by relative path) are skipped, never re-read.
+    private func indexNewFiles(_ urls: [URL], relativeTo docs: URL) async {
+        var known = Set<String>()
+        for t in tracks {
+            if let key = t.fileKey { known.insert(key) }
+        }
+
+        // Drop anything already indexed, and de-dupe within this batch.
+        var pending: [URL] = []
+        var seenKeys = Set<String>()
+        for url in urls {
+            guard let key = Self.relativePath(of: url, under: docs)?.lowercased() else { continue }
+            guard !known.contains(key), !seenKeys.contains(key) else { continue }
+            seenKeys.insert(key)
+            pending.append(url)
+        }
+
+        guard !pending.isEmpty else { return }
+
+        let total = pending.count
+        statusMessage = total == 1 ? "Adding 1 song…" : "Adding \(total) songs…"
+
+        var added: [Track] = []
+        added.reserveCapacity(total)
+        for (i, url) in pending.enumerated() {
+            if i % 25 == 0 {
+                statusMessage = "Adding \(i + 1)/\(total)…"
+                await Task.yield()
+            }
+            if let track = await metadataTrack(for: url, relativeTo: docs) {
+                added.append(track)
+            }
+        }
+
+        guard !added.isEmpty else { return }
+
+        tracks = (tracks + added).sorted(by: Self.trackSort) // rebuildGroups via didSet
+        saveCatalog()
+
+        // Same one-shot offline BPM pass a scan would have kicked off — only the
+        // new tracks are unchecked, so nothing already analyzed gets redone.
+        await analyzeMissingBPMs(limit: Self.maxBPMAnalysesPerScan)
+    }
+
+    /// Path of `url` relative to the Documents container, or nil if it lives outside.
+    private static func relativePath(of url: URL, under docs: URL) -> String? {
+        let path = url.path
+        let base = docs.path
+        guard path.hasPrefix(base) else { return nil }
+        let rel = String(path.dropFirst(base.count))
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        return rel.isEmpty ? nil : rel
     }
 
     // MARK: - Collect
@@ -891,6 +983,27 @@ final class LibraryStore: ObservableObject {
             artworkData: art
         )
     }
+
+    /// Set (or clear, with nil) the user's lane call for a track.
+    /// Matched by id first, then file key — ids diverge across a re-import.
+    func setLaneOverride(_ lane: TempoLane?, for track: Track) {
+        guard let idx = tracks.firstIndex(where: { $0.id == track.id })
+                ?? track.fileKey.flatMap({ key in tracks.firstIndex(where: { $0.fileKey == key }) })
+        else { return }
+        let raw = (lane == .unknown) ? nil : lane?.rawValue
+        guard tracks[idx].laneOverrideRaw != raw else { return }
+        tracks[idx].laneOverrideRaw = raw
+        saveCatalog()
+        if let lane, lane != .unknown {
+            statusMessage = "\(tracks[idx].title) → \(lane.title)"
+        } else {
+            statusMessage = "\(tracks[idx].title) → tempo decides"
+        }
+    }
+
+    /// How many tracks the user has laned by hand — the label count that
+    /// decides whether automatic classification is worth attempting.
+    var laneOverrideCount: Int { tracks.filter { $0.laneOverrideRaw != nil }.count }
 
     func deleteTrack(_ track: Track) {
         if let idx = tracks.firstIndex(where: { $0.id == track.id }) {

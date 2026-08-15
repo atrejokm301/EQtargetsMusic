@@ -109,6 +109,8 @@ struct MusicListView: View {
                             } label: {
                                 Label("Add to Queue", systemImage: "text.append")
                             }
+                            Divider()
+                            LaneOverrideMenu(track: track)
                         }
                         .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                             Button(role: .destructive) {
@@ -714,5 +716,63 @@ struct SearchView: View {
         }
         .background { theme.background.ignoresSafeArea() }
         .grokStyleNavigationChrome(title: "Search")
+    }
+}
+
+// MARK: - Lane override
+
+/// Context-menu submenu for setting a song's tempo lane by hand.
+///
+/// Exists because tempo cannot decide the lane: alabanzas de júbilo run well
+/// below 100 BPM and land on the same numbers as adoración, so every possible
+/// BPM cutoff misfiles one of the two. The user's call wins over BPM
+/// everywhere (`TempoFeel.lane(for:)`) — Smart Tempo, Banger Shuffle and
+/// crossfade all read it from that one place.
+struct LaneOverrideMenu: View {
+    let track: Track
+    @EnvironmentObject private var library: LibraryStore
+
+    private var current: TempoLane? {
+        track.laneOverrideRaw.flatMap(TempoLane.init(rawValue:))
+    }
+
+    var body: some View {
+        Menu {
+            ForEach([TempoLane.adoracion, .mid, .jubilo], id: \.self) { lane in
+                Button {
+                    library.setLaneOverride(lane, for: track)
+                } label: {
+                    Label(
+                        lane.title,
+                        systemImage: current == lane ? "checkmark.circle.fill" : lane.glyph
+                    )
+                }
+            }
+            if current != nil {
+                Divider()
+                Button {
+                    library.setLaneOverride(nil, for: track)
+                } label: {
+                    Label("Use detected tempo", systemImage: "arrow.uturn.backward")
+                }
+            }
+        } label: {
+            Label(
+                current.map { "Lane: \($0.title)" } ?? "Set Lane…",
+                systemImage: "slider.horizontal.3"
+            )
+        }
+    }
+}
+
+private extension TempoLane {
+    /// Menu glyph — rough visual for energy level.
+    var glyph: String {
+        switch self {
+        case .adoracion: return "moon.stars"
+        case .mid: return "figure.walk"
+        case .jubilo: return "flame"
+        case .unknown: return "questionmark"
+        }
     }
 }

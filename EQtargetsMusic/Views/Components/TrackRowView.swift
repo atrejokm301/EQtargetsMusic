@@ -53,7 +53,26 @@ struct TrackRowView: View {
 
             Spacer(minLength: 8)
 
-            if track.hasBPM, let bpm = track.bpm {
+            // A hand-set lane replaces the BPM badge: once the user has made
+            // the call, the tempo number is no longer what decides this song's
+            // behaviour, so showing it would be misleading.
+            if let raw = track.laneOverrideRaw,
+               let lane = TempoLane(rawValue: raw), lane != .unknown {
+                Text(lane.title)
+                    .font(.app(size: 10, weight: .bold))
+                    .foregroundStyle(theme.accent)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(
+                        Capsule(style: .continuous)
+                            .fill(theme.accent.opacity(highContrast ? 0.30 : 0.22))
+                    )
+                    .overlay(
+                        Capsule(style: .continuous)
+                            .stroke(theme.accent.opacity(highContrast ? 0.9 : 0.55), lineWidth: 1)
+                    )
+                    .accessibilityLabel("Lane set by you: \(lane.title)")
+            } else if track.hasBPM, let bpm = track.bpm {
                 Text(String(format: "%.0f", bpm))
                     .font(.app(size: 10, weight: .bold))
                     .foregroundStyle(theme.accent)

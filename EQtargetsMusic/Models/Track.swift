@@ -22,6 +22,13 @@ struct Track: Identifiable, Hashable, Codable {
     var fileBookmark: Data?
     var relativePath: String?
     var artworkData: Data?
+    /// User's own lane call, stored as `TempoLane.rawValue`. Wins over BPM
+    /// everywhere — see `TempoFeel.lane(for:)`.
+    ///
+    /// Tempo cannot decide this: an alabanza de júbilo at 78 BPM and an
+    /// adoración at 78 BPM are the same number and opposite lanes, so no
+    /// cutoff separates them. Kevin's ear is the ground truth.
+    var laneOverrideRaw: Int?
 
     /// Has a usable tempo for Banger Shuffle / UI badge.
     var hasBPM: Bool {
@@ -49,7 +56,8 @@ struct Track: Identifiable, Hashable, Codable {
         bpmChecked: Bool = false,
         fileBookmark: Data? = nil,
         relativePath: String? = nil,
-        artworkData: Data? = nil
+        artworkData: Data? = nil,
+        laneOverrideRaw: Int? = nil
     ) {
         self.id = id
         self.title = title
@@ -64,6 +72,7 @@ struct Track: Identifiable, Hashable, Codable {
         self.fileBookmark = fileBookmark
         self.relativePath = relativePath
         self.artworkData = artworkData
+        self.laneOverrideRaw = laneOverrideRaw
     }
 
     // Backward-compatible decode for catalogs saved before `bpmChecked`.
@@ -71,6 +80,7 @@ struct Track: Identifiable, Hashable, Codable {
         case id, title, artist, album, duration
         case trackNumber, discNumber, bpm, bpmChecked
         case fileBookmark, relativePath, artworkData
+        case laneOverrideRaw
     }
 
     init(from decoder: Decoder) throws {
@@ -88,6 +98,7 @@ struct Track: Identifiable, Hashable, Codable {
         fileBookmark = try c.decodeIfPresent(Data.self, forKey: .fileBookmark)
         relativePath = try c.decodeIfPresent(String.self, forKey: .relativePath)
         artworkData = try c.decodeIfPresent(Data.self, forKey: .artworkData)
+        laneOverrideRaw = try c.decodeIfPresent(Int.self, forKey: .laneOverrideRaw)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -104,6 +115,7 @@ struct Track: Identifiable, Hashable, Codable {
         try c.encodeIfPresent(fileBookmark, forKey: .fileBookmark)
         try c.encodeIfPresent(relativePath, forKey: .relativePath)
         try c.encodeIfPresent(artworkData, forKey: .artworkData)
+        try c.encodeIfPresent(laneOverrideRaw, forKey: .laneOverrideRaw)
     }
 
     var artworkImage: UIImage? {

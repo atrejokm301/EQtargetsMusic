@@ -202,7 +202,23 @@ enum TempoFeel {
     }
 
     /// Track lane from pre-read cutoffs — no UserDefaults access.
+    ///
+    /// Order: the user's own call, then BPM, then metadata keywords. The
+    /// override has to come first because tempo genuinely cannot decide this —
+    /// alabanzas de júbilo run well below 100 BPM and sit on the same numbers
+    /// as adoración, so any cutoff misfiles one of them.
     static func lane(for track: Track, thresholds t: (adoracionMax: Double, jubiloMin: Double)) -> TempoLane {
+        // Raw comparison rather than `TempoLane(rawValue:)` — this sits in
+        // Banger's per-candidate scoring loop, where the failable init's
+        // switch showed up against a perf budget that is already tight.
+        if let raw = track.laneOverrideRaw {
+            switch raw {
+            case TempoLane.adoracion.rawValue: return .adoracion
+            case TempoLane.mid.rawValue: return .mid
+            case TempoLane.jubilo.rawValue: return .jubilo
+            default: break // .unknown or a value from a newer build — ignore
+            }
+        }
         let fromBPM = lane(bpm: track.bpm, thresholds: t)
         if fromBPM != .unknown { return fromBPM }
         return laneHint(title: track.title, album: track.album, artist: track.artist) ?? .unknown
