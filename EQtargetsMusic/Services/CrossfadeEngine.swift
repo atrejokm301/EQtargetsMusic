@@ -127,7 +127,26 @@ struct CrossfadePlan: Equatable {
     /// Human-readable caps applied (for logs / debugging).
     var notes: [String]
 
+    // Structured reasons, so UI can explain the plan without parsing `notes`.
+    // The settings screen previously showed the *request* while the engine acted
+    // on this plan — a 30s Equal Power setting could really be a 16.5s Smooth fade.
+
+    /// Curve the user actually chose, before any long-fade substitution.
+    var requestedCurve: CrossfadeCurve = .equalPower
+    /// Adaptive-tempo multiplier (1 when tempo did not shorten the fade).
+    var tempoScale: Double = 1
+    /// Lane names when tempo scaling applied, for a readable explanation.
+    var tempoFromLane: String?
+    var tempoToLane: String?
+    var cappedByOutgoing: Bool = false
+    var cappedByIncoming: Bool = false
+    var cappedByRemaining: Bool = false
+
     var isEnabled: Bool { effective > 0.01 }
+
+    var curveWasSubstituted: Bool { isEnabled && curve != requestedCurve }
+    var durationWasReduced: Bool { isEnabled && effective + 0.35 < requested }
+    var differsFromRequest: Bool { curveWasSubstituted || durationWasReduced }
 
     var summary: String {
         if !isEnabled { return "off" }
@@ -137,6 +156,32 @@ struct CrossfadePlan: Equatable {
             return "\(eff)s \(curve.rawValue)"
         }
         return "\(eff)s (asked \(req)s) \(curve.rawValue)"
+    }
+
+    /// What will actually happen, in the user's terms. `nil` when it matches the request.
+    var adjustmentSummary: String? {
+        guard differsFromRequest else { return nil }
+        var parts: [String] = []
+        if durationWasReduced {
+            parts.append(String(format: "%.1fs", effective))
+        }
+        if curveWasSubstituted {
+            parts.append(curve.title)
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    /// Why it differs — one short clause, most specific cause first.
+    var adjustmentReason: String? {
+        guard differsFromRequest else { return nil }
+        if cappedByRemaining { return "not enough of this track left" }
+        if tempoScale < 0.98, let from = tempoFromLane, let to = tempoToLane {
+            return "\(from) → \(to) tempo change"
+        }
+        if cappedByOutgoing { return "this track is short" }
+        if cappedByIncoming { return "next track is short" }
+        if curveWasSubstituted { return "long blends use softer knees" }
+        return nil
     }
 }
 
@@ -185,6 +230,12 @@ enum CrossfadeMath {
 
         var fade = requested
         var notes: [String] = []
+        var cappedByOutgoing = false
+        var cappedByIncoming = false
+        var cappedByRemaining = false
+        var tempoScale = 1.0
+        var tempoFromLane: String?
+        var tempoToLane: String?
 
         // --- Outgoing body protection ---
         if outgoingPlayable > 0 {
@@ -194,6 +245,7 @@ enum CrossfadeMath {
             let outCap = max(minFade, min(byFraction, byBody > minFade ? byBody : byFraction))
             if fade > outCap + 0.05 {
                 notes.append(String(format: "out_cap→%.1f", outCap))
+                cappedByOutgoing = true
             }
             fade = min(fade, outCap)
         }
@@ -203,6 +255,7 @@ enum CrossfadeMath {
             let inCap = max(minFade, incomingPlayable * incomingFadeFraction)
             if fade > inCap + 0.05 {
                 notes.append(String(format: "in_cap→%.1f", inCap))
+                cappedByIncoming = true
             }
             fade = min(fade, inCap)
         }
@@ -218,6 +271,9 @@ enum CrossfadeMath {
                 let outL = TempoFeel.lane(bpm: outgoingBPM).title
                 let inL = TempoFeel.lane(bpm: incomingBPM).title
                 notes.append(String(format: "tempo %@→%@ ×%.2f", outL, inL, scale))
+                tempoScale = scale
+                tempoFromLane = outL
+                tempoToLane = inL
             }
             fade *= scale
         }
@@ -231,11 +287,14 @@ enum CrossfadeMath {
                     requested: requested,
                     effective: 0,
                     curve: settings.curve,
-                    notes: notes + [String(format: "rem_too_short(%.2f)", rem)]
+                    notes: notes + [String(format: "rem_too_short(%.2f)", rem)],
+                    requestedCurve: settings.curve,
+                    cappedByRemaining: true
                 )
             }
             if fade > remCap + 0.05 {
                 notes.append(String(format: "rem→%.1f", remCap))
+                cappedByRemaining = true
             }
             fade = min(fade, remCap)
         }
@@ -257,7 +316,14 @@ enum CrossfadeMath {
             requested: requested,
             effective: fade,
             curve: curve,
-            notes: notes
+            notes: notes,
+            requestedCurve: settings.curve,
+            tempoScale: tempoScale,
+            tempoFromLane: tempoFromLane,
+            tempoToLane: tempoToLane,
+            cappedByOutgoing: cappedByOutgoing,
+            cappedByIncoming: cappedByIncoming,
+            cappedByRemaining: cappedByRemaining
         )
     }
 

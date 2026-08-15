@@ -305,7 +305,7 @@ enum PlayerArtworkVisualCache {
 
         var result: [RGBAColor] = []
         for (rgb, _) in ranked {
-            var color = softEnhanceForUI(RGBAColor(red: rgb.r, green: rgb.g, blue: rgb.b))
+            let color = softEnhanceForUI(RGBAColor(red: rgb.r, green: rgb.g, blue: rgb.b))
             // Skip pure ink / paper mats after ranking (unless nothing else).
             if isMatteNeutral(color), result.count >= 1 { continue }
             if result.contains(where: { colorDistance($0, color) < 0.06 }) { continue }

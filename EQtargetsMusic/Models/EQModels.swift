@@ -266,29 +266,41 @@ enum AutoEQParser {
         }
     }
 
+    /// Map an exporter's filter-type token to an `EQFilterType`.
+    ///
+    /// AutoEQ emits `PK` throughout, but oratory1990 / Squiglink presets — the
+    /// usual source for headphone targets — lead with a low shelf and often end
+    /// with a high shelf. Those were previously unmatched and silently dropped,
+    /// while the file's `Preamp:` (computed *with* them) was still imported —
+    /// so the curve lost its bass compensation and kept the attenuation.
+    private static func filterType(for token: String) -> EQFilterType {
+        switch token.uppercased() {
+        case "LS", "LSC", "LSQ": return .lowShelf
+        case "HS", "HSC", "HSQ": return .highShelf
+        default: return .peak
+        }
+    }
+
     static func parse(text: String) throws -> EQLayerState {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { throw ParseError.empty }
 
-        var preamp: Double = 0
-        if let m = trimmed.firstMatch(of: #/(?i)Preamp\s*:\s*([+-]?\d+(?:\.\d+)?)\s*dB/#) {
-            preamp = Double(m.1) ?? 0
-            preamp = min(max(preamp, EQLayerState.preampRange.lowerBound), EQLayerState.preampRange.upperBound)
-        }
+        // Longest-first alternation: `LS` would otherwise match the prefix of
+        // `LSC` and strand the trailing character, failing the whole line.
+        let filterPattern = #/(?i)Filter\s+\d+\s*:\s*(ON|OFF)\s+(LSC|LSQ|LS|HSC|HSQ|HS|PEAK|PEQ|PK|Bell)\s+Fc\s+([+-]?\d+(?:\.\d+)?)\s*Hz\s+Gain\s+([+-]?\d+(?:\.\d+)?)\s*dB\s+Q\s+([+-]?\d+(?:\.\d+)?)/#
 
+        // Collect every filter first — selecting which to keep needs the whole set.
         var bands: [EQBand] = []
-        let filterPattern = #/(?i)Filter\s+\d+\s*:\s*(ON|OFF)\s+(PK|PEAK|PEQ|Bell)\s+Fc\s+([+-]?\d+(?:\.\d+)?)\s*Hz\s+Gain\s+([+-]?\d+(?:\.\d+)?)\s*dB\s+Q\s+([+-]?\d+(?:\.\d+)?)/#
-
         for match in trimmed.matches(of: filterPattern) {
             bands.append(
                 EQBand(
                     frequency: Double(match.3) ?? 1000,
                     gain: Double(match.4) ?? 0,
                     q: Double(match.5) ?? 1.0,
-                    isEnabled: String(match.1).uppercased() == "ON"
+                    isEnabled: String(match.1).uppercased() == "ON",
+                    filterType: filterType(for: String(match.2))
                 )
             )
-            if bands.count >= EQLayerState.bandCount { break }
         }
 
         if bands.isEmpty {
@@ -301,11 +313,25 @@ enum AutoEQParser {
                         q: Double(match.3) ?? 1.0
                     )
                 )
-                if bands.count >= EQLayerState.bandCount { break }
             }
         }
 
         guard !bands.isEmpty else { throw ParseError.noFilters }
+
+        // More filters than hardware bands: keep the ones that shape the curve
+        // most, not merely the first ten. Truncating in file order discards the
+        // largest correction whenever a preset lists it late.
+        if bands.count > EQLayerState.bandCount {
+            let kept = bands.enumerated()
+                .sorted { lhs, rhs in
+                    let l = abs(lhs.element.gain), r = abs(rhs.element.gain)
+                    return l == r ? lhs.offset < rhs.offset : l > r
+                }
+                .prefix(EQLayerState.bandCount)
+                .sorted { $0.offset < $1.offset }   // restore file (frequency) order
+                .map(\.element)
+            bands = Array(kept)
+        }
 
         if bands.count < EQLayerState.bandCount {
             let d = EQBand.defaultTenBands()
@@ -316,6 +342,16 @@ enum AutoEQParser {
                 bands.append(f)
             }
         }
+
+        // Derive preamp from the curve we actually realized rather than trusting
+        // the file's value. They agree when nothing was dropped (measured within
+        // 0.03 dB on a real AutoEQ export); they diverge exactly when filters were
+        // discarded or gains clamped — which is when the file's value is wrong.
+        // Never positive: a cuts-only curve gets 0, matching AutoEQ's convention.
+        let realizedPeak = FrequencyResponse.peakMagnitudeDB(bands: bands)
+        let preamp = min(max(-max(realizedPeak, 0),
+                             EQLayerState.preampRange.lowerBound),
+                         EQLayerState.preampRange.upperBound)
 
         return EQLayerState(preamp: preamp, bands: bands)
     }
@@ -376,6 +412,34 @@ enum FrequencyResponse {
         // Flat line — no marker
         if abs(best.magnitudeDB) < 0.05 { return nil }
         return Peak(frequency: best.frequency, magnitudeDB: best.magnitudeDB)
+    }
+
+    /// Peak magnitude of a band set in dB, ignoring preamp.
+    ///
+    /// Uses a fine sweep rather than the 96-point display grid: that grid lands
+    /// within ~0.34 dB of the true peak on a real AutoEQ preset, which is fine
+    /// for drawing a line but not for deriving preamp, where the error becomes
+    /// permanent headroom loss (or clipping).
+    static func peakMagnitudeDB(bands: [EQBand], sampleRate: Double = sampleRate) -> Double {
+        let filters = bands.filter(\.isEnabled).map {
+            EQBiquad(
+                type: $0.filterType,
+                frequency: $0.frequency,
+                gainDB: $0.gain,
+                q: $0.q,
+                sampleRate: sampleRate
+            )
+        }
+        guard !filters.isEmpty else { return 0 }
+        var peak = -Double.infinity
+        var f = 20.0
+        while f <= 20_000 {
+            var m = 0.0
+            for filter in filters { m += filter.magnitudeDB(at: f, sampleRate: sampleRate) }
+            if m > peak { peak = m }
+            f *= 1.005
+        }
+        return peak.isFinite ? peak : 0
     }
 
     static func xPosition(_ frequency: Double) -> Double {
@@ -637,14 +701,21 @@ final class EQPresetStore: ObservableObject {
     /// Snapshot of external outputs currently on the route (from the system).
     @Published private(set) var connectedDevices: [AudioRouteDevice] = []
 
+    /// Genre built-ins + the user's own limiter presets.
+    @Published var limiterPresets: [LimiterPreset] = []
+    /// Name of the limiter preset currently loaded, or "" once the user edits
+    /// a slider and the live state no longer matches any saved preset.
+    @Published var selectedLimiterName: String = ""
     private let userTargetsKey = "eqtargets.userTargetPresets"
     private let userFineTunesKey = "eqtargets.userFineTunePresets"
+    private let userLimitersKey = "eqtargets.userLimiterPresets.v1"
     private let deviceTargetsKey = "eqtargets.deviceTargetAssignments.v1"
     private let knownDevicesKey = "eqtargets.knownAudioDevices.v1"
     private var routeObserver: NSObjectProtocol?
 
     init() {
         loadPresets()
+        loadLimiterPresets()
         loadDeviceAssignments()
         loadKnownDevices()
         refreshConnectedDevices()
@@ -711,6 +782,81 @@ final class EQPresetStore: ObservableObject {
 
     func preset(named name: String) -> EQPreset? {
         targetPresets.first { $0.name == name }
+    }
+
+    // MARK: - Limiter presets
+
+    /// The shipped genres, in declaration order.
+    var builtInLimiterPresets: [LimiterPreset] {
+        limiterPresets.filter(\.isBuiltIn)
+    }
+
+    /// The user's own saved limiter presets.
+    var userLimiterPresets: [LimiterPreset] {
+        limiterPresets.filter { !$0.isBuiltIn }
+    }
+
+    func limiterPreset(named name: String) -> LimiterPreset? {
+        limiterPresets.first { $0.name == name }
+    }
+
+    /// Save (or overwrite) a user limiter preset. Built-in genre names are
+    /// reserved — saving over one creates "Name (2)" instead of shadowing it,
+    /// because the built-ins are what the genre chips resolve against.
+    @discardableResult
+    func saveLimiterPreset(name: String, state: LimiterState) -> String? {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        var finalName = trimmed
+        if limiterPresets.contains(where: { $0.isBuiltIn && $0.name == trimmed }) {
+            var n = 2
+            while limiterPresets.contains(where: { $0.name == "\(trimmed) (\(n))" }) { n += 1 }
+            finalName = "\(trimmed) (\(n))"
+        }
+
+        var saved = state.sanitized()
+        // A saved preset is meant to be used, so it always stores as enabled —
+        // otherwise recalling it appears to do nothing.
+        saved.isEnabled = true
+
+        if let idx = limiterPresets.firstIndex(where: { !$0.isBuiltIn && $0.name == finalName }) {
+            limiterPresets[idx].state = saved
+        } else {
+            limiterPresets.append(LimiterPreset(name: finalName, state: saved))
+        }
+        selectedLimiterName = finalName
+        saveUserLimiterPresets()
+        return finalName
+    }
+
+    func deleteLimiterPreset(_ preset: LimiterPreset) {
+        guard !preset.isBuiltIn else { return }
+        limiterPresets.removeAll { $0.id == preset.id }
+        if selectedLimiterName == preset.name {
+            selectedLimiterName = ""
+        }
+        saveUserLimiterPresets()
+    }
+
+    func renameLimiterPreset(_ preset: LimiterPreset, to newName: String) {
+        guard !preset.isBuiltIn else { return }
+        let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              !limiterPresets.contains(where: { $0.name == trimmed && $0.id != preset.id }),
+              let idx = limiterPresets.firstIndex(where: { $0.id == preset.id })
+        else { return }
+
+        let oldName = limiterPresets[idx].name
+        limiterPresets[idx].name = trimmed
+        if selectedLimiterName == oldName { selectedLimiterName = trimmed }
+        saveUserLimiterPresets()
+    }
+
+    /// Name of the preset whose parameters match `state`, or "" if none do.
+    /// Lets the UI keep a chip highlighted until the user actually diverges.
+    func limiterPresetName(matching state: LimiterState) -> String {
+        limiterPresets.first { $0.state.matchesParameters(of: state) }?.name ?? ""
     }
 
     // MARK: - Connected / known route devices
@@ -875,6 +1021,25 @@ final class EQPresetStore: ObservableObject {
         let userFine = fineTunePresets.filter { !$0.isSystemDefault }
         if let data = try? JSONEncoder().encode(userFine) {
             UserDefaults.standard.set(data, forKey: userFineTunesKey)
+        }
+    }
+
+    private func loadLimiterPresets() {
+        // Built-ins are always rebuilt from code, never persisted, so tuning a
+        // genre in a future release reaches users who already ran the app.
+        var presets = LimiterPreset.builtIns
+        if let data = UserDefaults.standard.data(forKey: userLimitersKey),
+           let user = try? JSONDecoder().decode([LimiterPreset].self, from: data) {
+            let builtInNames = Set(presets.map(\.name))
+            presets.append(contentsOf: user.filter { !$0.isBuiltIn && !builtInNames.contains($0.name) })
+        }
+        limiterPresets = presets
+    }
+
+    private func saveUserLimiterPresets() {
+        let user = limiterPresets.filter { !$0.isBuiltIn }
+        if let data = try? JSONEncoder().encode(user) {
+            UserDefaults.standard.set(data, forKey: userLimitersKey)
         }
     }
 

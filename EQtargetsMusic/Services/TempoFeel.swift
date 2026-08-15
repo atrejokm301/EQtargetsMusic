@@ -155,9 +155,17 @@ enum TempoFeel {
     }
 
     /// Map felt BPM → lane using current (user-tunable) cutoffs.
+    ///
+    /// Reads `thresholds` (two UserDefaults lookups). Callers in a hot loop should
+    /// snapshot the cutoffs once and use the `thresholds:` overload instead —
+    /// this sitting inside Banger's scoring loop cost ~75% of its runtime.
     static func lane(bpm raw: Double?) -> TempoLane {
+        lane(bpm: raw, thresholds: thresholds)
+    }
+
+    /// Lane from pre-read cutoffs — no UserDefaults access.
+    static func lane(bpm raw: Double?, thresholds t: (adoracionMax: Double, jubiloMin: Double)) -> TempoLane {
         guard let b = feltBPM(raw) else { return .unknown }
-        let t = thresholds
         if b < t.adoracionMax { return .adoracion }
         if b < t.jubiloMin { return .mid }
         return .jubilo
@@ -186,8 +194,16 @@ enum TempoFeel {
     }
 
     /// Best lane for a track: BPM first, then metadata hint.
+    ///
+    /// The hint path folds diacritics and lowercases three strings, so this is far
+    /// from free — compute it once per track, never per comparison.
     static func lane(for track: Track) -> TempoLane {
-        let fromBPM = lane(bpm: track.bpm)
+        lane(for: track, thresholds: thresholds)
+    }
+
+    /// Track lane from pre-read cutoffs — no UserDefaults access.
+    static func lane(for track: Track, thresholds t: (adoracionMax: Double, jubiloMin: Double)) -> TempoLane {
+        let fromBPM = lane(bpm: track.bpm, thresholds: t)
         if fromBPM != .unknown { return fromBPM }
         return laneHint(title: track.title, album: track.album, artist: track.artist) ?? .unknown
     }

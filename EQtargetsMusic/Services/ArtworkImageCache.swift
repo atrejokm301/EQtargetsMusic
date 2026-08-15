@@ -55,12 +55,18 @@ enum ArtworkImageCache {
         return img
     }
 
+    /// Display scale for decode sizing (avoids deprecated `UIScreen.main` on iOS 26).
+    private static var displayScale: CGFloat {
+        let scale = UITraitCollection.current.displayScale
+        return scale > 0 ? scale : 3
+    }
+
     /// Synchronous hit for already-decoded hero (e.g. Lock Screen preload before expand drag).
     static func cachedHero(
         trackID: UUID,
         maxPointSide: CGFloat = playerHeroMaxPointSide
     ) -> UIImage? {
-        let scale = UIScreen.main.scale
+        let scale = displayScale
         return heroCache.object(forKey: heroKey(trackID: trackID, maxPointSide: maxPointSide, scale: scale))
     }
 
@@ -77,7 +83,7 @@ enum ArtworkImageCache {
         fileURL: URL?,
         maxPointSide: CGFloat = playerHeroMaxPointSide
     ) async -> UIImage? {
-        let scale = await MainActor.run { UIScreen.main.scale }
+        let scale = await MainActor.run { displayScale }
         let maxPixels = max(maxPointSide * scale, 600)
         let key = heroKey(trackID: trackID, maxPointSide: maxPointSide, scale: scale)
 

@@ -50,7 +50,8 @@ struct RootTabView: View {
     /// Pre-warmed art tint/thumb for continuous full-player background (sync, no black placeholder).
     @State private var playerArtworkVisuals: PlayerArtworkVisuals = .brandedFallback(accent: .blue)
 
-    private let miniDockGap: CGFloat = 4
+    /// Gap between Liquid Glass mini capsule and the system tab dock.
+    private let miniDockGap: CGFloat = 8
 
     private var hasCurrentPlayableTrack: Bool {
         player.currentTrack != nil
@@ -168,7 +169,7 @@ struct RootTabView: View {
                 }
                 .zIndex(0)
 
-                // zIndex 10 — MiniPlayer docked to bottom only.
+                // zIndex 10 — Liquid Glass mini capsule above the system tab dock.
                 // Use overlay alignment so empty space does NOT intercept nav / list taps
                 // (full-screen VStack was eating hamburger hits while music played).
                 if hasCurrentPlayableTrack {
@@ -232,7 +233,7 @@ struct RootTabView: View {
             .onAppear {
                 containerHeight = geo.size.height
             }
-            .onChange(of: geo.size.height) { h in
+            .onChange(of: geo.size.height) { _, h in
                 if abs(h - containerHeight) > 0.5 {
                     containerHeight = h
                 }
@@ -243,12 +244,12 @@ struct RootTabView: View {
         .environmentObject(player)
         .environmentObject(presetStore)
         .preferredColorScheme(nil)
-        .onChange(of: player.currentTrack?.id) { _ in
+        .onChange(of: player.currentTrack?.id) { _, _ in
             refreshPlayerArtworkVisuals()
             reconcileWithTrack()
             ensureSmartBPMUpNext()
         }
-        .onChange(of: player.isPlaying) { playing in
+        .onChange(of: player.isPlaying) { _, playing in
             // Pause offline BPM decode while dual-EQ playback owns the device (battery/thermals).
             library.setPlaybackActive(playing)
         }
@@ -267,25 +268,25 @@ struct RootTabView: View {
             presetStore.refreshConnectedDevices()
             applyTargetForCurrentAudioRoute(reason: "routeChange")
         }
-        .onChange(of: library.isAnalyzingBPM) { analyzing in
+        .onChange(of: library.isAnalyzingBPM) { _, analyzing in
             if !analyzing {
                 player.syncLibraryMetadata(from: library.tracks)
                 ensureSmartBPMUpNext()
             }
         }
         // When Up Next is emptied (clear / end of list) or a fade finishes, optionally refill.
-        .onChange(of: player.queue.count) { _ in
+        .onChange(of: player.queue.count) { _, _ in
             ensureSmartBPMUpNext()
         }
-        .onChange(of: player.queueIndex) { _ in
+        .onChange(of: player.queueIndex) { _, _ in
             ensureSmartBPMUpNext()
         }
-        .onChange(of: player.isTransitioning) { fading in
+        .onChange(of: player.isTransitioning) { _, fading in
             if !fading {
                 ensureSmartBPMUpNext()
             }
         }
-        .onChange(of: smartBPMShuffleEnabled) { on in
+        .onChange(of: smartBPMShuffleEnabled) { _, on in
             if on {
                 SmartShuffleHost.resetSessionState()
                 ensureSmartBPMUpNext()
@@ -801,7 +802,15 @@ struct HamburgerMenuSheet: View {
 
     private var crossfadeSubtitle: String {
         if !player.crossfade.isEnabled { return "Off · hard cuts between tracks" }
-        var parts = ["\(player.crossfade.durationSeconds)s", player.crossfade.curve.title]
+        let plan = player.upcomingCrossfadePlan
+        // Lead with what the next transition will really do, not just the request.
+        let head: String
+        if plan.durationWasReduced {
+            head = String(format: "%.1fs (set %ds)", plan.effective, player.crossfade.durationSeconds)
+        } else {
+            head = "\(player.crossfade.durationSeconds)s"
+        }
+        var parts = [head, plan.isEnabled ? plan.curve.title : player.crossfade.curve.title]
         if player.crossfade.skipSilence { parts.append("skip silence") }
         if player.crossfade.adaptiveBPM { parts.append("smart tempo") }
         return parts.joined(separator: " · ")
@@ -917,7 +926,7 @@ struct TempoLaneThresholdsEditor: View {
                     if !editing { commit() }
                 }
                 .tint(theme.accent)
-                .onChange(of: adoracionMax) { _ in commit() }
+                .onChange(of: adoracionMax) { _, _ in commit() }
             }
 
             VStack(alignment: .leading, spacing: 6) {
@@ -938,7 +947,7 @@ struct TempoLaneThresholdsEditor: View {
                     if !editing { commit() }
                 }
                 .tint(theme.accent)
-                .onChange(of: jubiloMin) { _ in commit() }
+                .onChange(of: jubiloMin) { _, _ in commit() }
             }
 
             Text("Example: a 100 BPM song is Mid if cutoffs are 92 / 118. Raise “Adoración ends below” to 100 if you want that song treated as slow worship.")

@@ -59,7 +59,7 @@ enum SmartShuffleSelector {
         let currentLane = TempoFeel.lane(for: resolved)
         let currentBPM = TempoFeel.feltBPM(resolved.bpm)
         let currentArtist = normalized(resolved.artist)
-        let currentAlbum = normalized(resolved.album)
+        let currentAlbum = normalizedAlbum(resolved.album)
         let currentTitle = resolved.title.trimmingCharacters(in: .whitespacesAndNewlines)
 
         var hardIDs = excludeIDs
@@ -228,9 +228,9 @@ enum SmartShuffleSelector {
         }
 
         if alb == albumKey(artistKey: currentArtist, albumKey: currentAlbum),
-           currentAlbum != "unknown album" {
+           currentAlbum != BangerShuffle.unknownAlbum {
             s -= 9
-        } else if recentAlbums.contains(alb), !alb.hasSuffix("|unknown album") {
+        } else if recentAlbums.contains(alb), !alb.hasSuffix("|\(BangerShuffle.unknownAlbum)") {
             s -= 4
         }
 
@@ -363,15 +363,22 @@ enum SmartShuffleSelector {
     }
 
     private static func albumKey(artist: String, album: String) -> String {
-        albumKey(artistKey: normalized(artist), albumKey: normalized(album))
+        albumKey(artistKey: normalized(artist), albumKey: normalizedAlbum(album))
     }
 
     private static func albumKey(artistKey: String, albumKey: String) -> String {
-        "\(artistKey)|\(albumKey.isEmpty ? "unknown album" : albumKey)"
+        "\(artistKey)|\(albumKey.isEmpty ? BangerShuffle.unknownAlbum : albumKey)"
     }
 
     private static func normalized(_ raw: String) -> String {
         BangerShuffle.normalized(raw)
+    }
+
+    /// Album-side normalizer. Must not be `normalized`: that returns the *artist*
+    /// placeholder for an empty string, so the untagged-album sentinel never
+    /// appeared and every "is this album unknown?" guard below was dead.
+    private static func normalizedAlbum(_ raw: String) -> String {
+        BangerShuffle.normalizedAlbum(raw)
     }
 }
 

@@ -19,7 +19,7 @@
 |--------|------|
 | **Target** | AutoEQ / Squiglink compensation (10 peak/shelf bands + preamp) |
 | **Fine-Tune** | Personal tweak **on top** of Target (never overwrites Target) |
-| **Bass Style** | Independent post-PEQ Wavelet-style stage (never mutates Target / Fine-Tune) |
+| **Bass Style** | Independent post-PEQ stage (never mutates Target / Fine-Tune) |
 
 **Signal chain (current):**
 
@@ -78,7 +78,7 @@ UI: `BassStyleControlsView` under EQ on Now Playing (compact chips).
     ├── Info.plist
     ├── Models/
     │   ├── EQModels.swift         # PEQ bands, shelves, FR curves, DualEQState
-    │   ├── BassProcessor.swift    # Wavelet-style post stage models + DSP helpers
+    │   ├── BassProcessor.swift    # post stage models + DSP helpers
     │   └── Track.swift            # bookmarks, SecurityScopedAccess, metadata
     ├── Services/
     │   ├── AudioPlayerEngine.swift    # dual deck, remote, crossfade, bass chain, power
@@ -140,7 +140,7 @@ git push -u origin EQtargetsbeta
 
 **Files:** `AudioPlayerEngine.swift`, `CrossfadeEngine.swift`.
 
-### 6.2 Bass Style (Wavelet-style, independent)
+### 6.2 Bass Style (independent)
 
 - Post-PEQ only; **never** mutates Target / Fine-Tune / AutoEQ import.
 - Strength / Cutoff / Post gain + style chips (compact UI).

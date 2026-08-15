@@ -173,17 +173,48 @@ struct LiquidGlassBackground: View {
         ZStack {
             theme.background.ignoresSafeArea()
 
-            Circle()
-                .fill(theme.accent.opacity(theme.isDark ? 0.08 : 0.08))
-                .frame(width: 320, height: 320)
-                .blur(radius: 90)
-                .offset(x: -120, y: -200)
+            // Two large-radius blurs. They are static, so they normally
+            // rasterise once — but every environment change that invalidates
+            // this view pays for them again, and a 90pt blur on a 320pt circle
+            // is not a cheap pass. When the phone is already warm, fall back to
+            // soft radial gradients: same glow, no blur pass.
+            if PerformanceMemory.prefersCheapChrome {
+                Circle()
+                    .fill(
+                        RadialGradient(
+                            colors: [theme.accent.opacity(0.08), .clear],
+                            center: .center,
+                            startRadius: 0,
+                            endRadius: 250
+                        )
+                    )
+                    .frame(width: 500, height: 500)
+                    .offset(x: -120, y: -200)
 
-            Circle()
-                .fill(theme.accentSecondary.opacity(theme.isDark ? 0.05 : 0.06))
-                .frame(width: 280, height: 280)
-                .blur(radius: 80)
-                .offset(x: 140, y: 120)
+                Circle()
+                    .fill(
+                        RadialGradient(
+                            colors: [theme.accentSecondary.opacity(theme.isDark ? 0.05 : 0.06), .clear],
+                            center: .center,
+                            startRadius: 0,
+                            endRadius: 220
+                        )
+                    )
+                    .frame(width: 440, height: 440)
+                    .offset(x: 140, y: 120)
+            } else {
+                Circle()
+                    .fill(theme.accent.opacity(theme.isDark ? 0.08 : 0.08))
+                    .frame(width: 320, height: 320)
+                    .blur(radius: 90)
+                    .offset(x: -120, y: -200)
+
+                Circle()
+                    .fill(theme.accentSecondary.opacity(theme.isDark ? 0.05 : 0.06))
+                    .frame(width: 280, height: 280)
+                    .blur(radius: 80)
+                    .offset(x: 140, y: 120)
+            }
 
             if theme.isDark {
                 // Barely-there top sheen — keep pure black dominant
@@ -212,6 +243,14 @@ struct GlassCard: ViewModifier {
                         // Bare white veil so the pure black background bleeds through.
                         RoundedRectangle(cornerRadius: corner, style: .continuous)
                             .fill(Color.white.opacity(0.035))
+                    } else if PerformanceMemory.prefersCheapChrome {
+                        // Warm or in Low Power Mode: a blur behind every card is
+                        // a GPU pass per card per frame. The opaque veil below is
+                        // tuned to land close to the material's result, so the
+                        // swap reads as a slight flattening rather than a change
+                        // of design. Dark mode never had the material anyway.
+                        RoundedRectangle(cornerRadius: corner, style: .continuous)
+                            .fill(Color.white.opacity(0.72))
                     } else {
                         RoundedRectangle(cornerRadius: corner, style: .continuous)
                             .fill(.ultraThinMaterial)
@@ -349,7 +388,7 @@ private struct GrokNavChromeModifier<Trailing: View>: ViewModifier {
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackgroundVisibility(.visible, for: .navigationBar)
             .scrollEdgeEffectStyle(.soft, for: .top)
-            .environment(\.grokScrollOffsetHandler, { [hideAfter, showBelow] y in
+            .environment(\.grokScrollOffsetHandler, { y in
                 // Mutation goes through a MainActor hop so we never animate the ScrollView layout.
                 Task { @MainActor in
                     // Read/write @State via the modifier instance is invalid from escaping closure.

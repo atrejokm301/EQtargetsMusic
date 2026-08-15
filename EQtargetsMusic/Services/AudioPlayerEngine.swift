@@ -7,7 +7,7 @@
 //
 
 import Foundation
-import AVFoundation
+@preconcurrency import AVFoundation
 import MediaPlayer
 import Combine
 import UIKit
@@ -19,7 +19,9 @@ private let playerLog = Logger(subsystem: "com.eqtargets.music", category: "Play
 
 // MARK: - Streaming convert cursor
 
-private final class StreamingCursor {
+/// Cursor is only mutated from the main-actor streaming path; marked unchecked so
+/// AVAudioPlayerNode completion handlers (Sendable) can carry it safely.
+private final class StreamingCursor: @unchecked Sendable {
     var pos: AVAudioFramePosition
     init(_ pos: AVAudioFramePosition) { self.pos = pos }
 }
@@ -54,14 +56,22 @@ enum ShuffleMode: String, CaseIterable, Identifiable, Codable {
 // MARK: - Playback deck (independent PEQ + Bass chain)
 
 /// One fully independent deck:
-/// `Player → Target PEQ → Fine-Tune PEQ → Bass Processor → deck mixer`.
-/// Bass is a separate unit — never written into Target / Fine-Tune state.
-final class PlaybackDeck {
+/// `Player → Target PEQ → Fine-Tune PEQ → Bass Processor → Punch → Limiter → deck mixer`.
+/// Bass / Limiter are separate units — never written into Target / Fine-Tune state.
+///
+/// `@unchecked Sendable`: graph nodes are only mutated on the main actor, but
+/// AVAudioPlayerNode completion handlers require Sendable captures.
+final class PlaybackDeck: @unchecked Sendable {
     let player = AVAudioPlayerNode()
     let targetEQ: AVAudioUnitEQ
     let fineEQ: AVAudioUnitEQ
-    /// Post-PEQ bass stage (Wavelet-style). 4 bands: shelf + peaking helpers.
+    /// Post-PEQ bass stage. 4 bands: shelf + peaking helpers.
     let bassEQ: AVAudioUnitEQ
+    /// Dynamic layer for the Transient Punch style (`EQTPunchAudioUnit`).
+    /// Inert for every other style — see `TransientPunchProcessor`.
+    let punch: AVAudioUnitEffect
+    /// Post-Bass dynamics. Custom lookahead brickwall limiter (`EQTLimiterAudioUnit`).
+    let limiter: AVAudioUnitEffect
     let mixer = AVAudioMixerNode()
 
     var file: AVAudioFile?
@@ -79,6 +89,11 @@ final class PlaybackDeck {
         targetEQ = AVAudioUnitEQ(numberOfBands: bandCount)
         fineEQ = AVAudioUnitEQ(numberOfBands: bandCount)
         bassEQ = AVAudioUnitEQ(numberOfBands: BassProcessorState.bandCount)
+        punch = TransientPunchDSP.makeAudioUnit()
+        limiter = LimiterDSP.makeAudioUnit()
+        // Start bypassed until the first apply.
+        punch.bypass = true
+        limiter.bypass = true
     }
 
     func attach(to engine: AVAudioEngine) {
@@ -86,6 +101,8 @@ final class PlaybackDeck {
         engine.attach(targetEQ)
         engine.attach(fineEQ)
         engine.attach(bassEQ)
+        engine.attach(punch)
+        engine.attach(limiter)
         engine.attach(mixer)
     }
 
@@ -93,7 +110,9 @@ final class PlaybackDeck {
         engine.connect(player, to: targetEQ, format: format)
         engine.connect(targetEQ, to: fineEQ, format: format)
         engine.connect(fineEQ, to: bassEQ, format: format)
-        engine.connect(bassEQ, to: mixer, format: format)
+        engine.connect(bassEQ, to: punch, format: format)
+        engine.connect(punch, to: limiter, format: format)
+        engine.connect(limiter, to: mixer, format: format)
         engine.connect(mixer, to: engine.mainMixerNode, format: format)
     }
 
@@ -102,6 +121,8 @@ final class PlaybackDeck {
         engine.disconnectNodeOutput(targetEQ)
         engine.disconnectNodeOutput(fineEQ)
         engine.disconnectNodeOutput(bassEQ)
+        engine.disconnectNodeOutput(punch)
+        engine.disconnectNodeOutput(limiter)
         engine.disconnectNodeOutput(mixer)
     }
 
@@ -153,6 +174,19 @@ final class AudioPlayerEngine: ObservableObject {
                 return
             }
             applyBass()
+        }
+    }
+
+    /// Independent post-Bass limiter. Changing this never mutates DualEQ / Bass.
+    @Published var limiter: LimiterState = .flat {
+        didSet {
+            guard oldValue != limiter else { return }
+            schedulePersistLimiter()
+            if suppressDSPApply {
+                pendingDSPApply = true
+                return
+            }
+            applyLimiter()
         }
     }
 
@@ -241,6 +275,7 @@ final class AudioPlayerEngine: ObservableObject {
 
     private let eqDefaultsKey = "eqtargets.dualEQ"
     private let bassDefaultsKey = "eqtargets.bassProcessor"
+    private let limiterDefaultsKey = "eqtargets.limiter"
     private let crossfadeDefaultsKey = "eqtargets.crossfadeSettings"
     private static let repeatDefaultsKey = "eqtargets.repeatMode"
     private static let shuffleDefaultsKey = "eqtargets.shuffleMode"
@@ -258,6 +293,7 @@ final class AudioPlayerEngine: ObservableObject {
 
     private var eqPersistTask: Task<Void, Never>?
     private var bassPersistTask: Task<Void, Never>?
+    private var limiterPersistTask: Task<Void, Never>?
     private var crossfadePersistTask: Task<Void, Never>?
     private var sessionPersistTask: Task<Void, Never>?
     private var sleepTimerTask: Task<Void, Never>?
@@ -306,8 +342,8 @@ final class AudioPlayerEngine: ObservableObject {
     private var sessionMarkedActive = false
     private var sessionCategoryConfigured = false
 
-    /// When true, dual/bass didSet only marks `pendingDSPApply` (no hardware write).
-    /// Used during init load so Target + Fine + Bass apply **once** after the graph exists.
+    /// When true, dual/bass/limiter didSet only marks `pendingDSPApply` (no hardware write).
+    /// Used during init load so Target + Fine + Bass + Limiter apply **once** after the graph exists.
     private var suppressDSPApply = false
     private var pendingDSPApply = false
 
@@ -337,6 +373,7 @@ final class AudioPlayerEngine: ObservableObject {
         suppressDSPApply = true
         loadEQ()
         loadBass()
+        loadLimiter()
         suppressDSPApply = false
         pendingDSPApply = false
         loadCrossfade()
@@ -344,7 +381,7 @@ final class AudioPlayerEngine: ObservableObject {
         // First session claim — not force-spam on every later play.
         activatePlaybackSession(background: false, forceActive: false)
         buildStableGraph()
-        applyEQ() // single Target + Fine-Tune + Bass push after graph is attached
+        applyEQ() // single Target + Fine-Tune + Bass + Limiter push after graph is attached
         setupRemoteCommands()
         setupLifecycleObservers()
         #if DEBUG
@@ -1170,10 +1207,10 @@ extension AudioPlayerEngine {
         }
 
         // Volume-only fade on deck mixers — Target/Fine-Tune EQ untouched.
+        // During the fade, activeDeck is still outgoing and inactiveDeck is incoming
+        // (roles swap only when progress hits 1). Read decks from `self` so the Timer
+        // handler does not capture non-Sendable AV node references.
         let start = CACurrentMediaTime()
-        let outMixer = outgoing.mixer
-        let inMixer = incoming.mixer
-        let outPlayer = outgoing.player
         // ~20 Hz is plenty for volume ramps; avoids 45 Hz main-thread wakeups.
         let tick: TimeInterval = 1.0 / 20.0
 
@@ -1188,25 +1225,27 @@ extension AudioPlayerEngine {
                 }
                 let progress = min(max((CACurrentMediaTime() - start) / max(fadeDur, 0.05), 0), 1)
                 let g = CrossfadeMath.gains(progress: progress, curve: fadeCurve)
-                outMixer.outputVolume = g.out
-                inMixer.outputVolume = g.inn
+                let outDeck = self.activeDeck
+                let inDeck = self.inactiveDeck
+                outDeck.mixer.outputVolume = g.out
+                inDeck.mixer.outputVolume = g.inn
 
                 if progress >= 1 {
                     t.invalidate()
                     self.crossfadeTimer = nil
-                    outgoing.streamFeedGeneration &+= 1
+                    outDeck.streamFeedGeneration &+= 1
                     // Silence outgoing first, then swap roles, then bypass inactive EQ
                     // (never toggle unit.bypass while that deck's mixer volume > 0).
-                    outPlayer.stop()
-                    outPlayer.reset()
-                    outMixer.outputVolume = 0
-                    inMixer.outputVolume = 1
-                    outgoing.file = nil
-                    outgoing.track = nil
+                    outDeck.player.stop()
+                    outDeck.player.reset()
+                    outDeck.mixer.outputVolume = 0
+                    inDeck.mixer.outputVolume = 1
+                    outDeck.file = nil
+                    outDeck.track = nil
                     self.fadingOutFile = nil
 
-                    self.activeDeck = incoming
-                    self.inactiveDeck = outgoing
+                    self.activeDeck = inDeck
+                    self.inactiveDeck = outDeck
                     self.isTransitioning = false
                     // Active keeps DualEQ processing; new inactive → targetEQ+fineEQ bypass.
                     self.applyEQ(to: self.activeDeck, processingEnabled: true)
@@ -1603,7 +1642,8 @@ extension AudioPlayerEngine {
     /// Playback clock for session + graph. 48 kHz matches modern iPhone / AirPods
     /// hardware and avoids hopping between rates when the library is mixed 44.1/48.
     /// Battery delta vs 44.1 is small; stability and converter quality matter more for clarity.
-    private static let playbackSampleRate: Double = 48_000
+    /// `nonisolated` so default args / static helpers can read it off the main actor.
+    nonisolated private static let playbackSampleRate: Double = 48_000
 
     /// 44.1→48 converter quality. Max when cool; step down under heat (SRC is real CPU).
     private static var preferredSRCQuality: AVAudioQuality {
@@ -1625,7 +1665,7 @@ extension AudioPlayerEngine {
     }
 
     /// Keep AVAudioSession preferred rate locked to the graph (48 kHz).
-    private func alignSessionSampleRate(to rate: Double = playbackSampleRate) {
+    private func alignSessionSampleRate(to rate: Double = 48_000) {
         let target = Self.playbackSampleRate
         _ = rate // API keeps a parameter for call-site clarity
         // Prefer rate only — do not re-setActive on main (Hang Risk + redundant).
@@ -1741,7 +1781,7 @@ extension AudioPlayerEngine {
         let trim = SilenceAnalyzer.analyzeFast(file)
         storeSilenceTrim(key, trim)
         playerLog.info(
-            "silenceTrim(fast v2): intro=\(trim.introSkip, format: .fixed(precision: 2))s end=\(trim.effectiveEnd, format: .fixed(precision: 2))s playable=\(trim.playableDuration, format: .fixed(precision: 1))s"
+            "silenceTrim(fast v3): intro=\(trim.introSkip, format: .fixed(precision: 2))s end=\(trim.effectiveEnd, format: .fixed(precision: 2))s playable=\(trim.playableDuration, format: .fixed(precision: 1))s"
         )
         return trim
     }
@@ -1766,7 +1806,7 @@ extension AudioPlayerEngine {
                 guard let self else { return }
                 self.storeSilenceTrim(key, trim)
                 playerLog.info(
-                    "silenceTrim(full v2): intro=\(trim.introSkip, format: .fixed(precision: 2))s end=\(trim.effectiveEnd, format: .fixed(precision: 2))s playable=\(trim.playableDuration, format: .fixed(precision: 1))s"
+                    "silenceTrim(full v3): intro=\(trim.introSkip, format: .fixed(precision: 2))s end=\(trim.effectiveEnd, format: .fixed(precision: 2))s playable=\(trim.playableDuration, format: .fixed(precision: 1))s"
                 )
                 guard self.crossfade.skipSilence else { return }
                 guard self.loadGeneration == generation else { return }
@@ -1884,12 +1924,12 @@ extension AudioPlayerEngine {
     // MARK: - EQ
 
     /// Push DualEQState onto decks (Target → Fine-Tune order never inverted),
-    /// then the independent Bass Processor. Bass never mutates Target / Fine-Tune.
+    /// then Bass Processor, then Limiter. Bass / Limiter never mutate DualEQ.
     ///
     /// Battery path: only the **active** deck runs EQ processing when not crossfading.
     /// The inactive deck keeps band/preamp params written underneath `unit.bypass = true`
     /// so un-bypass before a fade is cheap and click-free. While `isTransitioning`, both
-    /// decks process so the incoming deck already matches Target+Fine+Bass before volume rises.
+    /// decks process so the incoming deck already matches Target+Fine+Bass+Limiter before volume rises.
     func applyEQ() {
         applyEQ(to: activeDeck, processingEnabled: true)
         applyEQ(to: inactiveDeck, processingEnabled: isTransitioning)
@@ -1899,12 +1939,53 @@ extension AudioPlayerEngine {
     func applyBass() {
         applyBass(to: activeDeck, processingEnabled: true)
         applyBass(to: inactiveDeck, processingEnabled: isTransitioning)
+        applyPunch(to: activeDeck, processingEnabled: true)
+        applyPunch(to: inactiveDeck, processingEnabled: isTransitioning)
     }
 
-    /// - Parameter processingEnabled: `false` forces `targetEQ` + `fineEQ` + `bassEQ` unit bypass
-    ///   (params still written). `true` applies dual/layer / bass rules as usual.
+    /// Push only the dynamic stage. Driven by the same `bass` state, so it is
+    /// always applied alongside `applyBass`. Serves both Transient Punch and
+    /// Sustain / Rumble — the node picks its gain law from the style.
+    private func applyPunch(to deck: PlaybackDeck, processingEnabled: Bool) {
+        var params = TransientPunchDSP.unitParams(from: bass, sampleRate: sampleRate)
+        if !processingEnabled {
+            params.bypass = true
+        }
+        TransientPunchDSP.apply(params: params, to: deck.punch)
+
+        #if DEBUG
+        if !params.bypass {
+            let rumble = params.coefficients.mode == .rumble
+            let boostAmt = rumble ? self.bass.rumbleSustain : self.bass.punchAttack
+            let cutAmt = rumble ? self.bass.rumbleSoften : self.bass.punchSustain
+            let fc = self.bass.cutoff * (rumble ? SustainRumbleTuning.crossoverMultiplier : 1.15)
+            playerLog.debug(
+                "\(rumble ? "Rumble" : "Punch") boost=\(boostAmt, format: .fixed(precision: 2)) cut=\(cutAmt, format: .fixed(precision: 2)) str=\(self.bass.strength, format: .fixed(precision: 2)) fc=\(fc, format: .fixed(precision: 0))Hz"
+            )
+        }
+        #endif
+    }
+
+    /// Live attack boost from the Punch stage in dB, for metering.
+    var punchAttackBoostDB: Double {
+        TransientPunchDSP.attackBoostDB(of: activeDeck.punch)
+    }
+
+    /// Live sustain trim from the Punch stage in dB (positive), for metering.
+    var punchSustainTrimDB: Double {
+        TransientPunchDSP.sustainTrimDB(of: activeDeck.punch)
+    }
+
+    /// Push only the Limiter stage (DualEQ / Bass units untouched).
+    func applyLimiter() {
+        applyLimiter(to: activeDeck, processingEnabled: true)
+        applyLimiter(to: inactiveDeck, processingEnabled: isTransitioning)
+    }
+
+    /// - Parameter processingEnabled: `false` forces `targetEQ` + `fineEQ` + `bassEQ` + `limiter` unit bypass
+    ///   (params still written). `true` applies dual/layer / bass / limiter rules as usual.
     private func applyEQ(to deck: PlaybackDeck, processingEnabled: Bool) {
-        // Chain: player → targetEQ → fineEQ → bassEQ → mixer (see PlaybackDeck.connect)
+        // Chain: player → targetEQ → fineEQ → bassEQ → limiter → mixer (see PlaybackDeck.connect)
         var target = dual.target
         var fine = dual.fineTune
         target.sanitizeForDSP()
@@ -1923,8 +2004,10 @@ extension AudioPlayerEngine {
             globalBypass: dual.isBypassed || forceUnitBypass,
             label: "FineTune"
         )
-        // Bass is independent of dual.isBypassed — only style/strength or deck idle gates it.
+        // Bass + Punch + Limiter are independent of dual.isBypassed.
         applyBass(to: deck, processingEnabled: processingEnabled)
+        applyPunch(to: deck, processingEnabled: processingEnabled)
+        applyLimiter(to: deck, processingEnabled: processingEnabled)
     }
 
     /// Map `BassProcessorState` onto the deck's post-PEQ `bassEQ` unit.
@@ -1956,10 +2039,33 @@ extension AudioPlayerEngine {
         #if DEBUG
         if !unitBypass {
             playerLog.debug(
-                "Bass \(self.bass.style.rawValue, privacy: .public): str=\(self.bass.strength, format: .fixed(precision: 2)) fc=\(self.bass.cutoff, format: .fixed(precision: 0))Hz post=\(self.bass.postGain, format: .fixed(precision: 1))dB"
+                "Bass \(self.bass.style.rawValue, privacy: .public): str=\(self.bass.strength, format: .fixed(precision: 2)) fc=\(self.bass.cutoff, format: .fixed(precision: 0))Hz post=\(self.bass.postGain, format: .fixed(precision: 1))dB global=\(params.globalGain, format: .fixed(precision: 2))dB ceiling=\(BassProcessorDSP.peakCeilingDB, format: .fixed(precision: 1))dB"
             )
         }
         #endif
+    }
+
+    /// Map `LimiterState` onto the deck's post-Bass Dynamics Processor.
+    private func applyLimiter(to deck: PlaybackDeck, processingEnabled: Bool) {
+        var params = LimiterDSP.unitParams(from: limiter, sampleRate: sampleRate)
+        if !processingEnabled {
+            params.bypass = true
+        }
+        LimiterDSP.apply(params: params, to: deck.limiter)
+
+        #if DEBUG
+        if !params.bypass {
+            let makeup = self.limiter.effectiveMakeupDB
+            playerLog.debug(
+                "Limiter ceil=\(self.limiter.ceilingDB, format: .fixed(precision: 1))dB thr=\(self.limiter.thresholdDB, format: .fixed(precision: 1))dB ratio=\(self.limiter.ratio, format: .fixed(precision: 1)) knee=\(self.limiter.kneeDB, format: .fixed(precision: 1))dB atk=\(self.limiter.attackMs, format: .fixed(precision: 1))ms rel=\(self.limiter.releaseMs, format: .fixed(precision: 0))ms look=\(self.limiter.lookaheadMs, format: .fixed(precision: 1))ms makeup=\(makeup, format: .fixed(precision: 1))dB"
+            )
+        }
+        #endif
+    }
+
+    /// Live gain reduction on the active deck, in dB (positive). For metering.
+    var limiterGainReductionDB: Double {
+        LimiterDSP.gainReductionDB(of: activeDeck.limiter)
     }
 
     /// Map one EQLayerState onto one AVAudioUnitEQ (10 peaking bands + preamp).
@@ -2453,6 +2559,15 @@ extension AudioPlayerEngine {
         )
     }
 
+    /// Plan for the next natural transition, for the settings UI.
+    ///
+    /// The blend controls show what was *requested*; caps, adaptive tempo, and the
+    /// long-fade curve substitution can all make the real fade differ. Surfacing
+    /// this is what keeps "30s Equal Power" from quietly meaning "16.5s Smooth".
+    var upcomingCrossfadePlan: CrossfadePlan {
+        peekCrossfadePlan(remaining: nil)
+    }
+
     /// Estimate fade plan for the upcoming natural transition (queue peek).
     private func peekCrossfadePlan(remaining: TimeInterval?) -> CrossfadePlan {
         let next = peekNextTrack()
@@ -2758,6 +2873,15 @@ extension AudioPlayerEngine {
         }
     }
 
+    private func schedulePersistLimiter() {
+        limiterPersistTask?.cancel()
+        limiterPersistTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            guard let self, !Task.isCancelled else { return }
+            self.persistLimiterNow()
+        }
+    }
+
     private func schedulePersistCrossfade() {
         crossfadePersistTask?.cancel()
         crossfadePersistTask = Task { @MainActor [weak self] in
@@ -2770,10 +2894,12 @@ extension AudioPlayerEngine {
     private func flushPersistedSettings() {
         eqPersistTask?.cancel()
         bassPersistTask?.cancel()
+        limiterPersistTask?.cancel()
         crossfadePersistTask?.cancel()
         sessionPersistTask?.cancel()
         persistEQNow()
         persistBassNow()
+        persistLimiterNow()
         persistCrossfadeNow()
         persistPlaybackSessionNow()
     }
@@ -2866,6 +2992,20 @@ extension AudioPlayerEngine {
         b.sanitize()
         // Assign without double-apply: set storage then apply once from init.
         bass = b
+    }
+
+    private func persistLimiterNow() {
+        if let data = try? JSONEncoder().encode(limiter) {
+            UserDefaults.standard.set(data, forKey: limiterDefaultsKey)
+        }
+    }
+
+    private func loadLimiter() {
+        guard let data = UserDefaults.standard.data(forKey: limiterDefaultsKey),
+              let decoded = try? JSONDecoder().decode(LimiterState.self, from: data) else { return }
+        var s = decoded
+        s.sanitize()
+        limiter = s
     }
 
     private func persistCrossfadeNow() {

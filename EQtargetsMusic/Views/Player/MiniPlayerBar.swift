@@ -2,9 +2,9 @@
 //  MiniPlayerBar.swift
 //  EQtargetsMusic
 //
-//  Compact floating mini player — true capsule, narrower than the dock,
-//  warm glass matching tab chrome, clean art / title / transport spacing.
-//  Progress hairline sits on the lower inner edge (never under chrome).
+//  Liquid Glass mini player for iOS 26.
+//  Floating capsule above the tab dock — slightly narrower than the dock width-wise.
+//  Tap / drag-up opens the full player. Rides the dock when it scroll-minimizes.
 //
 
 import SwiftUI
@@ -14,30 +14,27 @@ struct MiniPlayerBar: View {
     @Environment(\.grokTheme) private var theme
     @Environment(\.colorScheme) private var scheme
 
-    /// Tap art/title → animate open.
     var onTapExpand: () -> Void
-    /// Continuous upward drag progress in 0…1 (already clamped by host or raw translation).
     var onExpandDragChanged: (_ translationY: CGFloat) -> Void
-    /// Drag released; host settles using translation + predicted end.
     var onExpandDragEnded: (_ translationY: CGFloat, _ predictedY: CGFloat) -> Void
-    /// Fade art/title/chrome during expand (layout of pill stays fixed). Matches root host API.
     var contentFade: CGFloat = 1
 
     @State private var displayTime: TimeInterval = 0
 
-    // MARK: - Sizing (8pt grid; tap targets ≥44pt)
+    // MARK: Metrics
+    // Full glass size (reverted from the short 48pt experiment).
+    // horizontalInset keeps overall width slightly under the system tab bar.
 
-    /// Capsule height — reads as a pill, not a fat dock row.
-    static let barHeight: CGFloat = 52
-    /// Noticeably narrower than the full-width dock.
-    static let horizontalInset: CGFloat = 28
-    private static let artSide: CGFloat = 36
-    private static let artCorner: CGFloat = 8
-    private static let progressTrackHeight: CGFloat = 2
-    /// Hit columns ≥44pt wide; icons stay visually light inside.
-    private static let controlWidth: CGFloat = 44
-    private static let sideInset: CGFloat = 8
-    private static let progressHorizontalInset: CGFloat = 16
+    static let barHeight: CGFloat = 64
+    /// Slightly inset so the pill is a bit narrower than the full-width tab dock.
+    static let horizontalInset: CGFloat = 22
+
+    private static let artSide: CGFloat = 44
+    private static let artCorner: CGFloat = 12
+    private static let hPad: CGFloat = 10
+    private static let controlW: CGFloat = 44
+    /// Edge rail on the mini chin — a little taller so it doesn’t read as a hairline.
+    private static let progressH: CGFloat = 3.5
 
     private var isDark: Bool { scheme == .dark }
 
@@ -46,184 +43,190 @@ struct MiniPlayerBar: View {
         return min(max(displayTime / d, 0), 1)
     }
 
-    private var pillShape: Capsule {
-        Capsule(style: .continuous)
-    }
-
     var body: some View {
-        HStack(spacing: 0) {
-            // Expand region: art + meta only. Title truncates before transport.
-            Button(action: onTapExpand) {
-                HStack(spacing: 8) {
-                    artwork
-                        .frame(width: Self.artSide, height: Self.artSide)
-                        .clipShape(RoundedRectangle(cornerRadius: Self.artCorner, style: .continuous))
-                        .opacity(Double(contentFade))
-                        .reportMiniPlayerArtFrame()
-
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(player.currentTrack?.title ?? "Nothing Playing")
-                            .font(.app(size: 13, weight: .semibold))
-                            .foregroundStyle(theme.primaryText)
-                            .lineLimit(1)
-                            .modifier(MiniPlayerLegibleText(isDark: isDark, strength: .title))
-                        Text(subtitle)
-                            .font(.app(size: 11, weight: .medium))
-                            .foregroundStyle(theme.secondaryText)
-                            .lineLimit(1)
-                            .modifier(MiniPlayerLegibleText(isDark: isDark, strength: .subtitle))
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .opacity(Double(contentFade))
-                }
-                .contentShape(Rectangle())
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                openHitRegion
+                transport
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel(openAccessibilityLabel)
-            .accessibilityHint("Opens the full player")
-            .simultaneousGesture(expandDragGesture)
-            .layoutPriority(0)
-
-            // Fixed gap so meta never collides with transport.
-            Spacer(minLength: 8)
-                .frame(width: 8)
-
-            // Transport: fixed columns, no overlapping hit frames.
-            HStack(spacing: 0) {
-                Button {
-                    player.togglePlayPause()
-                } label: {
-                    Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
-                        .font(.app(size: 16, weight: .semibold))
-                        .foregroundStyle(theme.primaryText)
-                        .modifier(MiniPlayerLegibleText(isDark: isDark, strength: .icon))
-                        .frame(width: Self.controlWidth, height: Self.barHeight)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(MiniPlayerControlButtonStyle())
-                .accessibilityLabel(player.isPlaying ? "Pause" : "Play")
-
-                Button {
-                    player.skipForward()
-                } label: {
-                    Image(systemName: "forward.fill")
-                        .font(.app(size: 14, weight: .semibold))
-                        .foregroundStyle(theme.primaryText.opacity(0.88))
-                        .modifier(MiniPlayerLegibleText(isDark: isDark, strength: .icon))
-                        .frame(width: Self.controlWidth, height: Self.barHeight)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(MiniPlayerControlButtonStyle())
-                .accessibilityLabel("Next track")
-            }
-            .fixedSize(horizontal: true, vertical: false)
-            .layoutPriority(1)
-            .opacity(Double(contentFade))
+            .padding(.horizontal, Self.hPad)
+            .padding(.vertical, 8)
         }
-        // Equal side inset so art + buttons sit inside the capsule curves (no edge clipping).
-        .padding(.horizontal, Self.sideInset)
-        .frame(maxWidth: .infinity)
         .frame(height: Self.barHeight)
-        .background { pillBackground }
+        .frame(maxWidth: .infinity)
+        .background { glassChrome }
+        // Progress is part of the chrome rim — full width, zero inset, clipped by capsule.
         .overlay(alignment: .bottom) {
-            progressHairline
-                .frame(height: Self.progressTrackHeight)
-                // Inset from capsule tips so the track follows the inner curve.
-                .padding(.horizontal, Self.progressHorizontalInset)
-                .padding(.bottom, 4)
+            edgeProgressRail
                 .allowsHitTesting(false)
         }
-        .clipShape(pillShape)
-        .shadow(
-            color: Color.black.opacity(isDark ? 0.22 : 0.08),
-            radius: isDark ? 8 : 10,
-            y: isDark ? 2 : 3
-        )
+        .clipShape(Capsule(style: .continuous))
+        .shadow(color: .black.opacity(isDark ? 0.35 : 0.12), radius: 16, y: 6)
+        .shadow(color: .black.opacity(isDark ? 0.18 : 0.06), radius: 4, y: 1)
         .accessibilityElement(children: .contain)
-        .accessibilityValue(progressAccessibilityValue)
+        .accessibilityValue(progressA11y)
         .onAppear { displayTime = player.currentTime }
-        .onChange(of: player.currentTrack?.id) { _ in
+        .onChange(of: player.currentTrack?.id) { _, _ in
             displayTime = player.currentTime
         }
-        .onReceive(player.progressSubject) { t in
-            displayTime = t
-        }
+        .onReceive(player.progressSubject) { displayTime = $0 }
     }
 
-    // MARK: - Chrome
+    // MARK: - Regions
 
-    /// Match system tab chrome material, then warm-tint so Light reads cream and Dark
-    /// reads charcoal — never cool milky grey floating over lists.
-    private var pillBackground: some View {
-        ZStack {
-            pillShape
-                .fill(.bar)
-            // Warm veil — same family as AppSurfacePalette elevated/card.
-            pillShape
-                .fill(
-                    isDark
-                        ? Color.appElevated(isDark: true).opacity(0.42)
-                        : Color.appElevated(isDark: false).opacity(0.55)
-                )
-            // Hairline using warm glass stroke tokens (not Color.primary).
-            pillShape
-                .strokeBorder(
-                    LinearGradient(
-                        colors: [theme.glassStrokeTop, theme.glassStrokeBottom],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    ),
-                    lineWidth: 0.5
-                )
+    private var openHitRegion: some View {
+        Button(action: onTapExpand) {
+            HStack(spacing: 12) {
+                artwork
+                    .frame(width: Self.artSide, height: Self.artSide)
+                    .clipShape(RoundedRectangle(cornerRadius: Self.artCorner, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: Self.artCorner, style: .continuous)
+                            .strokeBorder(Color.white.opacity(isDark ? 0.12 : 0.28), lineWidth: 0.5)
+                    }
+                    .shadow(color: .black.opacity(0.18), radius: 4, y: 1)
+                    .opacity(Double(contentFade))
+                    .reportMiniPlayerArtFrame()
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(player.currentTrack?.title ?? "Nothing Playing")
+                        .font(.system(size: 15, weight: .semibold, design: .rounded))
+                        .foregroundStyle(theme.primaryText)
+                        .lineLimit(1)
+
+                    Text(subtitle)
+                        .font(.system(size: 12, weight: .medium, design: .rounded))
+                        .foregroundStyle(theme.secondaryText)
+                        .lineLimit(1)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .opacity(Double(contentFade))
+            }
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .accessibilityLabel(openA11y)
+        .accessibilityHint("Opens the full player")
+        .simultaneousGesture(expandDragGesture)
+        .layoutPriority(0)
     }
 
-    private var progressHairline: some View {
-        GeometryReader { geo in
-            let trackW = max(geo.size.width, 1)
-            let fillW = max(Self.progressTrackHeight * 2, trackW * progress)
-            ZStack(alignment: .leading) {
+    private var transport: some View {
+        HStack(spacing: 2) {
+            Button {
+                player.togglePlayPause()
+            } label: {
+                Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(theme.primaryText)
+                    .frame(width: Self.controlW, height: Self.controlW)
+                    .contentShape(Circle())
+            }
+            .buttonStyle(MiniGlassControlStyle())
+            .accessibilityLabel(player.isPlaying ? "Pause" : "Play")
+
+            Button {
+                player.skipForward()
+            } label: {
+                Image(systemName: "forward.fill")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(theme.primaryText.opacity(0.9))
+                    .frame(width: Self.controlW, height: Self.controlW)
+                    .contentShape(Circle())
+            }
+            .buttonStyle(MiniGlassControlStyle())
+            .accessibilityLabel("Next track")
+        }
+        .opacity(Double(contentFade))
+        .layoutPriority(1)
+    }
+
+    // MARK: - Liquid Glass
+
+    @ViewBuilder
+    private var glassChrome: some View {
+        if #available(iOS 26.0, *) {
+            Capsule(style: .continuous)
+                .fill(Color.clear)
+                .glassEffect(
+                    .regular
+                        .tint(theme.accent.opacity(isDark ? 0.18 : 0.12))
+                        .interactive(),
+                    in: Capsule(style: .continuous)
+                )
+        } else {
+            ZStack {
                 Capsule(style: .continuous)
-                    .fill(theme.primaryText.opacity(isDark ? 0.16 : 0.10))
+                    .fill(.ultraThinMaterial)
                 Capsule(style: .continuous)
                     .fill(
-                        LinearGradient(
-                            colors: [theme.accent, theme.accentSecondary.opacity(0.92)],
-                            startPoint: .leading,
-                            endPoint: .trailing
-                        )
+                        isDark
+                            ? Color.white.opacity(0.06)
+                            : Color.white.opacity(0.35)
                     )
-                    .frame(width: fillW)
+                Capsule(style: .continuous)
+                    .strokeBorder(
+                        LinearGradient(
+                            colors: [
+                                Color.white.opacity(isDark ? 0.22 : 0.55),
+                                Color.white.opacity(isDark ? 0.04 : 0.12)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        lineWidth: 0.6
+                    )
             }
         }
+    }
+
+    /// Thin edge rail flush to the bottom of the glass pill (Apple Music energy).
+    /// No side padding, no gradient candy, no always-on stub — fill grows from 0.
+    private var edgeProgressRail: some View {
+        GeometryReader { geo in
+            let w = max(geo.size.width, 1)
+            let fill = w * progress
+            ZStack(alignment: .bottomLeading) {
+                // Soft unplayed track — capsule caps so ends aren’t square.
+                Capsule(style: .continuous)
+                    .fill(theme.primaryText.opacity(isDark ? 0.10 : 0.08))
+                    .frame(height: Self.progressH)
+
+                // Solid played fill — min width = height keeps the leading end round.
+                // No animation: progress ticks every frame; animating would smear.
+                if fill > 0.5 {
+                    Capsule(style: .continuous)
+                        .fill(theme.accent.opacity(isDark ? 0.92 : 0.88))
+                        .frame(width: max(Self.progressH, fill), height: Self.progressH)
+                }
+            }
+            .frame(width: w, height: geo.size.height, alignment: .bottom)
+            .clipShape(Capsule(style: .continuous))
+        }
+        .frame(height: Self.progressH)
         .accessibilityHidden(true)
     }
 
-    // MARK: - Copy / art / gesture
-
-    private var progressAccessibilityValue: String {
-        guard player.duration > 0.5 else { return "" }
-        let pct = Int((progress * 100).rounded())
-        return "\(pct) percent played"
-    }
+    // MARK: - Data
 
     private var subtitle: String {
-        guard let t = player.currentTrack else { return "" }
-        let base: String = {
-            if !t.artist.isEmpty { return t.artist }
-            return t.album
-        }()
+        guard let t = player.currentTrack else { return " " }
+        let base = t.artist.isEmpty ? (t.album.isEmpty ? " " : t.album) : t.artist
         if let sleep = player.sleepTimerRemainingLabel {
             return "\(base) · ☾ \(sleep)"
         }
         return base
     }
 
-    private var openAccessibilityLabel: String {
+    private var openA11y: String {
         let title = player.currentTrack?.title ?? "Nothing"
         let artist = player.currentTrack?.artist ?? ""
-        if artist.isEmpty { return "Now playing: \(title)" }
-        return "Now playing: \(title) by \(artist)"
+        return artist.isEmpty ? "Now playing: \(title)" : "Now playing: \(title) by \(artist)"
+    }
+
+    private var progressA11y: String {
+        guard player.duration > 0.5 else { return "" }
+        return "\(Int((progress * 100).rounded())) percent played"
     }
 
     @ViewBuilder
@@ -235,16 +238,16 @@ struct MiniPlayerBar: View {
                 .scaledToFill()
         } else {
             ZStack {
-                theme.elevated.opacity(0.85)
+                theme.elevated
                 Image(systemName: "music.note")
-                    .font(.app(size: 13, weight: .medium))
+                    .font(.system(size: 16, weight: .medium))
                     .foregroundStyle(theme.tertiaryText)
             }
         }
     }
 
     private var expandDragGesture: some Gesture {
-        DragGesture(minimumDistance: 14, coordinateSpace: .local)
+        DragGesture(minimumDistance: 12, coordinateSpace: .local)
             .onChanged { value in
                 guard value.translation.height < 0 else {
                     onExpandDragChanged(0)
@@ -258,52 +261,34 @@ struct MiniPlayerBar: View {
     }
 }
 
-// MARK: - Press feedback
+// MARK: - Control press
 
-private struct MiniPlayerControlButtonStyle: ButtonStyle {
+private struct MiniGlassControlStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .opacity(configuration.isPressed ? 0.55 : 1)
-            .scaleEffect(configuration.isPressed ? 0.92 : 1)
-            .animation(.easeOut(duration: 0.16), value: configuration.isPressed)
+            .scaleEffect(configuration.isPressed ? 0.90 : 1)
+            .animation(.easeOut(duration: 0.14), value: configuration.isPressed)
     }
 }
 
-// MARK: - Legibility over busy chrome
+// MARK: - Scroll runway
 
-/// Soft counter-halo so labels stay readable when scroll content peeks through the glass.
-/// Uses warm cream / warm black — never pure cool white.
-private struct MiniPlayerLegibleText: ViewModifier {
-    enum Strength {
-        case title
-        case subtitle
-        case icon
-    }
-
-    var isDark: Bool
-    var strength: Strength
-
-    private var lightHalo: Color {
-        Color.appElevated(isDark: false)
-    }
-
-    private var darkHalo: Color {
-        Color.appBackground(isDark: true)
-    }
-
-    func body(content: Content) -> some View {
-        switch strength {
-        case .title:
-            content
-                .shadow(color: isDark ? darkHalo.opacity(0.70) : lightHalo.opacity(0.90), radius: 1.2, y: 0.5)
-                .shadow(color: isDark ? darkHalo.opacity(0.40) : lightHalo.opacity(0.55), radius: 3, y: 0)
-        case .subtitle:
-            content
-                .shadow(color: isDark ? darkHalo.opacity(0.60) : lightHalo.opacity(0.85), radius: 1.0, y: 0.5)
-                .shadow(color: isDark ? darkHalo.opacity(0.35) : lightHalo.opacity(0.45), radius: 2.5, y: 0)
-        case .icon:
-            content
-                .shadow(color: isDark ? darkHalo.opacity(0.55) : lightHalo.opacity(0.80), radius: 1.0, y: 0.4)
+extension View {
+    /// Extra bottom scroll space so last content (Limiter, last tracks, etc.) can
+    /// clear the floating mini player into open air. `safeAreaInset` alone still
+    /// leaves the final controls half under the pill.
+    ///
+    /// - Parameter hasTrack: taller runway when the mini is mounted.
+    @ViewBuilder
+    func miniPlayerScrollRunway(hasTrack: Bool) -> some View {
+        // Mini (~64) is already partially covered by root safeAreaInset; this is
+        // pure empty runway *beyond* that so users can scroll content fully up.
+        let extra: CGFloat = hasTrack ? 160 : 48
+        if #available(iOS 17.0, *) {
+            self.contentMargins(.bottom, extra, for: .scrollContent)
+        } else {
+            self
         }
     }
 }

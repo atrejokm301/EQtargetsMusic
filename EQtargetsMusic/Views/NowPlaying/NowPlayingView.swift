@@ -31,16 +31,26 @@ struct NowPlayingView: View {
                 EQControlsView(
                     dual: $player.dual,
                     bass: $player.bass,
+                    limiter: $player.limiter,
                     onImportAutoEQ: { showImporter = true },
-                    onToast: { player.showToast($0) }
+                    onToast: { player.showToast($0) },
+                    limiterGainReduction: { player.limiterGainReductionDB },
+                    punchAttackBoost: { player.punchAttackBoostDB },
+                    punchSustainTrim: { player.punchSustainTrimDB }
                 )
                 .padding(16)
                 .glassCard(corner: 20)
+
+                // Empty runway: scroll Limiter / Bass fully above the mini into open space.
+                Color.clear
+                    .frame(height: player.currentTrack != nil ? 180 : 72)
+                    .accessibilityHidden(true)
             }
             .padding(16)
             .padding(.bottom, 24)
         }
         .scrollIndicators(.visible)
+        .miniPlayerScrollRunway(hasTrack: player.currentTrack != nil)
         .grokScrollEdgeBlur()
         .background { LiquidGlassBackground() }
         .grokStyleNavigationChrome(title: "Now Playing") {
@@ -70,7 +80,7 @@ struct NowPlayingView: View {
         .alert("System-wide EQ on iOS", isPresented: $showSystemWideInfo) {
             Button("Got it", role: .cancel) {}
         } message: {
-            Text("Apple does not allow third-party apps to equalize YouTube, Music, Netflix, or other apps. EQtargets Music applies Target + Fine-Tune + Bass Style only to audio played inside this app.")
+            Text("Apple does not allow third-party apps to equalize YouTube, Music, Netflix, or other apps. EQtargets Music applies Target + Fine-Tune + Bass Style + Limiter only to audio played inside this app.")
         }
         // Toast is rendered globally from RootTabView so library actions are visible too.
     }
@@ -195,47 +205,14 @@ private struct NowPlayingTransportCard: View {
     @EnvironmentObject private var player: AudioPlayerEngine
     @Environment(\.grokTheme) private var theme
 
-    @State private var isScrubbing = false
-    @State private var scrubTime: TimeInterval = 0
-    @State private var displayTime: TimeInterval = 0
-
     var body: some View {
         VStack(spacing: 12) {
-            VStack(spacing: 8) {
-                Slider(
-                    value: Binding(
-                        get: { isScrubbing ? scrubTime : displayTime },
-                        set: { scrubTime = $0 }
-                    ),
-                    in: 0 ... max(player.duration, 0.001),
-                    onEditingChanged: { editing in
-                        if editing {
-                            if !isScrubbing { scrubTime = displayTime }
-                            isScrubbing = true
-                        } else {
-                            let target = scrubTime
-                            player.seek(to: target)
-                            displayTime = target
-                            scrubTime = target
-                            isScrubbing = false
-                        }
-                    }
-                )
-                .tint(theme.accent)
-                .disabled(player.currentTrack == nil || player.duration <= 0)
-                .transaction { $0.animation = nil }
-                .animation(nil, value: isScrubbing)
-                .animation(nil, value: displayTime)
-
-                HStack {
-                    Text(formatTime(isScrubbing ? scrubTime : displayTime))
-                    Spacer()
-                    Text(formatTime(player.duration))
-                }
-                .font(.app(size: 11, weight: .medium, design: .monospaced))
-                .foregroundStyle(theme.tertiaryText)
-                .transaction { $0.animation = nil }
-            }
+            // Shared waveform scrubber (same as full player) — times stay under the bars.
+            PlayerProgressScrubber(
+                isInteractive: true,
+                isCollapseDragging: false,
+                chrome: .nowPlaying
+            )
 
             HStack(spacing: 24) {
                 Button { player.cycleShuffleMode() } label: {
@@ -278,21 +255,6 @@ private struct NowPlayingTransportCard: View {
         }
         .padding(16)
         .glassCard(corner: 20)
-        .onAppear { displayTime = player.currentTime }
-        .onChange(of: player.currentTrack?.id) { _ in
-            displayTime = player.currentTime
-        }
-        .onReceive(player.progressSubject) { t in
-            guard !isScrubbing else { return }
-            displayTime = t
-        }
-    }
-
-    private func formatTime(_ t: TimeInterval) -> String {
-        guard t.isFinite, t >= 0 else { return "0:00" }
-        let m = Int(t) / 60
-        let s = Int(t) % 60
-        return String(format: "%d:%02d", m, s)
     }
 }
 
@@ -421,6 +383,41 @@ struct AutoMixSettingsSheet: View {
                                 .buttonStyle(.plain)
                                 .accessibilityLabel("Fade curve \(curve.title)")
                                 .accessibilityAddTraits(selected ? .isSelected : [])
+                            }
+                        }
+
+                        // What the next transition will actually do. Shown only when it
+                        // differs from the request — caps, adaptive tempo, or the
+                        // long-fade curve substitution.
+                        if player.crossfade.isEnabled {
+                            let plan = player.upcomingCrossfadePlan
+                            if let adjusted = plan.adjustmentSummary {
+                                HStack(alignment: .top, spacing: 8) {
+                                    Image(systemName: "info.circle.fill")
+                                        .font(.app(size: 12, weight: .semibold))
+                                        .foregroundStyle(theme.accentSecondary)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("Next blend: \(adjusted)")
+                                            .font(.app(size: 12, weight: .semibold, design: .rounded))
+                                            .foregroundStyle(theme.primaryText)
+                                        if let reason = plan.adjustmentReason {
+                                            Text(reason)
+                                                .font(.app(size: 11, weight: .medium, design: .rounded))
+                                                .foregroundStyle(theme.secondaryText)
+                                        }
+                                    }
+                                    Spacer(minLength: 0)
+                                }
+                                .padding(10)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                        .fill(theme.elevated)
+                                )
+                                .accessibilityElement(children: .combine)
+                                .accessibilityLabel(
+                                    "Next blend \(adjusted)"
+                                        + (plan.adjustmentReason.map { ", \($0)" } ?? "")
+                                )
                             }
                         }
 
