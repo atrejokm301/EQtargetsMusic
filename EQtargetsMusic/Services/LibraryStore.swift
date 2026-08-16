@@ -41,7 +41,10 @@ final class LibraryStore: ObservableObject {
     ///      low-band offbeat support (ground-truthed against 12 labelled
     ///      library songs). Full library re-analysis — earlier values are
     ///      wrong in both directions; see `applyBPMEngineMigrationIfNeeded`.
-    private static let bpmEngineVersion = 7
+    /// v8 = deep re-read when the opening 36 s yields no pulse. Live worship
+    ///      records open with talking/applause/pads, which refused 79 of 379
+    ///      tracks. Re-runs **only** tracks that lack a BPM.
+    private static let bpmEngineVersion = 8
     private static let bpmEngineVersionKey = "eqtargets.bpmEngineVersion"
 
     static let supportedExtensions: Set<String> = [
@@ -254,17 +257,23 @@ final class LibraryStore: ObservableObject {
     private func applyBPMEngineMigrationIfNeeded() {
         let stored = UserDefaults.standard.integer(forKey: Self.bpmEngineVersionKey)
         guard stored < Self.bpmEngineVersion else { return }
+        // Coming from v7, only the *refused* tracks can read differently: v8
+        // changes nothing about how a pulse is measured, it just re-reads
+        // deeper when the opening 36 s had no pulse to find. Tracks that
+        // already produced a BPM would get the identical answer, so re-running
+        // them would be pure battery cost — 300 of Kevin's 379 were fine.
+        let onlyRefused = stored >= 7
         var next = tracks
         var reset = 0
         for i in next.indices {
-            // v7 = band-split detector: earlier values are wrong in *both*
-            // directions (ballads doubled, dense júbilo halved) and nothing
-            // stored says which — so everything re-analyzes. The value must be
-            // cleared too, not just re-opened: `analyzeMissingBPMs` never
-            // overwrites an existing valid BPM, which made v6's
-            // re-open-without-clear a silent no-op — analysis ran, result
-            // discarded. (Cost: the rare tag BPM is redetected as well.)
-            if next[i].bpmChecked || next[i].bpm != nil {
+            // Pre-v7 values are wrong in *both* directions (ballads doubled,
+            // dense júbilo halved) and nothing stored says which, so those
+            // re-analyze wholesale. The value must be cleared too, not just
+            // re-opened: `analyzeMissingBPMs` never overwrites an existing
+            // valid BPM, which made v6's re-open-without-clear a silent no-op.
+            let needsRerun = onlyRefused ? !next[i].hasBPM
+                                         : (next[i].bpmChecked || next[i].bpm != nil)
+            if needsRerun {
                 next[i].bpmChecked = false
                 next[i].bpm = nil
                 reset += 1

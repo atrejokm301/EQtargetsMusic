@@ -152,6 +152,43 @@ final class BPMDetectorTests: XCTestCase {
         assertBPM(BPMDetector.estimateBPM(fileURL: url), near: 152, "accent cycle must resolve to felt tempo")
     }
 
+    /// A live-record shape: a long unpulsed intro (pads + crowd wash) followed
+    /// by the actual song. The first pass reads only the opening, finds nothing,
+    /// and must re-read deeper rather than giving up — this refused 79 of 379
+    /// tracks in Kevin's library before the second pass existed.
+    func test_beatStartingAfterALongIntroIsStillFound() throws {
+        let bpm = 150.0
+        let introSeconds = 45.0        // longer than the first pass reads
+        let total = 110.0
+        var samples = [Float](repeating: 0, count: Int(total * sampleRate))
+        var seed: UInt64 = 21
+
+        // Intro: sustained pad + low noise wash, deliberately no pulse.
+        for i in 0 ..< Int(introSeconds * sampleRate) {
+            let t = Double(i) / sampleRate
+            seed = seed &* 6364136223846793005 &+ 1442695040888963407
+            let wash = Float(Int64(bitPattern: seed >> 11)) / Float(Int64.max) * 0.02
+            samples[i] = Float(0.10 * sin(2 * .pi * 220 * t) + 0.06 * sin(2 * .pi * 330 * t)) + wash
+        }
+
+        // Body: a plain four-on-the-floor at a known tempo.
+        let beat = 60.0 / bpm * sampleRate
+        var b = introSeconds * sampleRate
+        while Int(b) < samples.count {
+            lowHit(into: &samples, at: Int(b), amp: 0.8)
+            noiseHit(into: &samples, at: Int(b + beat / 2), amp: 0.25, seed: &seed)
+            b += beat
+        }
+        for i in Int(introSeconds * sampleRate) ..< samples.count {
+            let t = Double(i) / sampleRate
+            samples[i] += Float(0.05 * sin(2 * .pi * 300 * t))
+        }
+
+        let url = try writeWAV(samples, name: "lateStart150.wav")
+        assertBPM(BPMDetector.estimateBPM(fileURL: url), near: 150,
+                  "beat starting after the first-pass window must still be found")
+    }
+
     /// Near-silence must return nil, not a confident hallucination.
     /// (A raw LCG is NOT usable as the noise source here — its lattice
     /// structure is genuinely periodic and the detector rightly finds it.)

@@ -34,7 +34,11 @@ private let bpmLog = Logger(subsystem: "com.eqtargets.music", category: "BPM")
 enum BPMDetector {
     /// Lower SR = less RAM/CPU on bulk library analysis.
     private static let targetSampleRate: Double = 8_000
+    /// Cheap first pass — enough for a studio cut that starts on the beat.
     private static let maxReadSeconds: Double = 36
+    /// Retry span when the first pass finds no pulse. Long enough to reach the
+    /// body of a live track past an intro of talking, applause or free-time pads.
+    private static let deepReadSeconds: Double = 150
     private static let windowSeconds: Double = 10
     /// 10 ms — at 20 ms a ~146 BPM lag of 20.5 hops fell between integers and
     /// its double won by default. Autocorr stage is still microseconds.
@@ -61,11 +65,29 @@ enum BPMDetector {
 
     /// Estimated BPM or nil if analysis fails / low confidence / silence.
     /// Safe off the main actor — file I/O + pure compute only.
+    ///
+    /// Two passes, because a live worship record does not start where the beat
+    /// does. Measured on Kevin's library: 79 of 379 tracks were refused, and
+    /// their correlation over the opening 36 s sat at 0.069–0.124 — the same
+    /// band as white noise (0.082), because the intro is talking, applause and
+    /// pads with no pulse to lock onto. Re-reading the same files over 150 s
+    /// lifted correlation to 0.161–0.400 and recovered 6 of 9 sampled.
+    ///
+    /// The deep pass only runs when the cheap one fails, so the ~79% of tracks
+    /// that already resolve pay nothing extra.
     nonisolated static func estimateBPM(fileURL: URL) -> Double? {
         // Don't startAccess on Documents/Music copies (sandbox_extension 22 spam).
         let accessed = SecurityScopedAccess.startIfNeeded(fileURL)
         defer { SecurityScopedAccess.stopIfNeeded(fileURL, didStart: accessed) }
 
+        if let quick = estimate(fileURL: fileURL, readSeconds: maxReadSeconds) {
+            return quick
+        }
+        bpmLog.debug("retrying deep: \(fileURL.lastPathComponent, privacy: .public)")
+        return estimate(fileURL: fileURL, readSeconds: deepReadSeconds)
+    }
+
+    nonisolated private static func estimate(fileURL: URL, readSeconds: Double) -> Double? {
         guard let file = try? AVAudioFile(forReading: fileURL) else {
             bpmLog.debug("open failed: \(fileURL.lastPathComponent, privacy: .public)")
             return nil
@@ -85,7 +107,7 @@ enum BPMDetector {
 
         let maxSrcFrames = AVAudioFrameCount(min(
             Double(file.length),
-            srcFormat.sampleRate * maxReadSeconds
+            srcFormat.sampleRate * readSeconds
         ))
         guard maxSrcFrames > AVAudioFrameCount(srcFormat.sampleRate * 3) else { return nil }
 
