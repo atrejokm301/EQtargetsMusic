@@ -2,9 +2,21 @@
 //  AppSurfaceColors.swift
 //  EQtargetsMusic
 //
-//  Warm Light / Dark *surfaces* only — chrome, cards, text.
-//  Analysis colors (EQ bands, spectrum, Target/Fine tints) live on GrokTheme
-//  as `analysis*` / targetTint / fineTint and stay fully saturated.
+//  ⚠️ CURRENTLY UNREFERENCED. `Theme/GrokTheme.swift` is the single source of
+//  truth for every surface the app actually renders — all view code reads it
+//  via `@Environment(\.grokTheme)`. Editing this file changes nothing on screen.
+//
+//  Kept only as a typed token reference (and for the UIKit helpers below, if
+//  nav/tab bars ever need explicit colors instead of `configureWithDefaultBackground()`).
+//
+//  LIGHT values here are kept in sync with GrokTheme's resolved light appearance
+//  (neutral grouped-background model: light grey canvas, white cards).
+//  DARK values here describe a warm-charcoal scheme that GrokTheme does NOT use —
+//  GrokTheme's dark mode is true black (#000000). Do not treat the dark values
+//  below as authoritative.
+//
+//  Analysis colors (EQ bands, spectrum, Target/Fine tints) live on GrokTheme as
+//  `targetTint` / `fineTint` and stay fully saturated in both schemes.
 //
 
 import SwiftUI
@@ -12,23 +24,25 @@ import UIKit
 
 // MARK: - Design tokens (sRGB 0…1)
 
-/// Single source of truth for warm UI surfaces. Not a third theme — only Light & Dark.
+/// Token mirror for UI surfaces. Not a third theme — only Light & Dark.
 enum AppSurfacePalette {
-    // MARK: Light — paper / cream (no pure #FFFFFF)
+    // MARK: Light — neutral (no pure #FFFFFF canvas; cards read as white against it)
 
-    /// App canvas — soft warm off-white
-    static let lightBackground = RGB(0.973, 0.957, 0.925)      // #F8F4EC
+    /// App canvas — neutral off-white
+    static let lightBackground = RGB(0.969, 0.969, 0.976)      // #F7F7F9
     /// Raised chrome (toolbars, sheets)
-    static let lightElevated = RGB(0.992, 0.980, 0.957)        // #FDFAF4
+    static let lightElevated = RGB(0.988, 0.988, 0.992)        // #FCFCFD
     /// Cards / glass fill
-    static let lightCard = RGB(1.000, 0.992, 0.973)             // #FFFDF8
-    /// Primary ink (warm near-black)
-    static let lightTextPrimary = RGB(0.118, 0.102, 0.086)      // #1E1A16
-    static let lightTextSecondary = RGB(0.380, 0.345, 0.306)    // #61584E
-    static let lightTextTertiary = RGB(0.545, 0.498, 0.447)     // #8B7F72
-    static let lightSeparator = RGB(0.120, 0.090, 0.060)        // used at low alpha
+    static let lightCard = RGB(0.984, 0.984, 0.988)            // #FBFBFC
+    /// Primary ink — 17.7:1 on lightBackground
+    static let lightTextPrimary = RGB(0.067, 0.067, 0.078)     // #111114
+    /// 6.3:1 on lightBackground — AA for body text
+    static let lightTextSecondary = RGB(0.357, 0.357, 0.384)   // #5B5B62
+    /// 3.2:1 — non-essential / large text only
+    static let lightTextTertiary = RGB(0.545, 0.545, 0.576)    // #8B8B93
+    static let lightSeparator = RGB(0.000, 0.000, 0.000)       // used at low alpha
 
-    // MARK: Dark — warm charcoal (not cool navy, not pure #000)
+    // MARK: Dark — warm charcoal (NOT what GrokTheme renders; see header)
 
     /// App canvas — warm black / charcoal
     static let darkBackground = RGB(0.039, 0.035, 0.031)        // #0A0908
@@ -42,7 +56,7 @@ enum AppSurfacePalette {
     static let darkTextTertiary = RGB(0.525, 0.490, 0.445)      // #867D71
     static let darkSeparator = RGB(0.980, 0.940, 0.880)
 
-    // MARK: Analysis (NEVER warm-shifted — EQ / spectrum precision)
+    // MARK: Analysis (NEVER desaturated — EQ / spectrum precision)
 
     static let analysisTargetLight = RGB(0.15, 0.45, 0.78)
     static let analysisTargetDark = RGB(0.40, 0.75, 1.00)
@@ -62,7 +76,7 @@ enum AppSurfacePalette {
 // MARK: - SwiftUI Color API
 
 extension Color {
-    /// Warm canvas — use for app backgrounds, not for EQ plot ink.
+    /// Neutral canvas — use for app backgrounds, not for EQ plot ink.
     static func appBackground(isDark: Bool) -> Color {
         isDark ? AppSurfacePalette.darkBackground.color : AppSurfacePalette.lightBackground.color
     }
@@ -87,11 +101,11 @@ extension Color {
         isDark ? AppSurfacePalette.darkTextTertiary.color : AppSurfacePalette.lightTextTertiary.color
     }
 
-    /// Glass stroke / hairlines on warm surfaces
+    /// Glass stroke / hairlines
     static func appHairline(isDark: Bool) -> Color {
         isDark
             ? AppSurfacePalette.darkSeparator.color.opacity(0.10)
-            : AppSurfacePalette.lightSeparator.color.opacity(0.10)
+            : AppSurfacePalette.lightSeparator.color.opacity(0.08)
     }
 
     // MARK: Analysis (keep saturated)

@@ -14,7 +14,6 @@ import SwiftUI
 struct QueueGlassSurface: View {
     var visuals: PlayerArtworkVisuals
     var reduceTransparency: Bool
-    @Environment(\.colorScheme) private var scheme
 
     var body: some View {
         // Queue is always dark glass (no light-mode branch).
@@ -110,8 +109,13 @@ struct QueueSheet: View {
     private var editsBlocked: Bool { player.isTransitioning }
 
     /// Always-dark theme for readable text on queue glass (ignore system light mode).
+    /// `darkCounterpart` keeps Navy users on Navy instead of dropping them to black.
     private var queueTheme: GrokTheme {
-        GrokTheme(isDark: true, accentTheme: theme.accentTheme)
+        GrokTheme(
+            isDark: true,
+            accentTheme: theme.accentTheme,
+            surfaceTheme: theme.surfaceTheme.darkCounterpart
+        )
     }
 
     private var resolvedVisuals: PlayerArtworkVisuals {
@@ -283,6 +287,10 @@ struct QueueSheet: View {
             }
         }
         .environment(\.grokTheme, queueTheme)
+        // Must be the environment value, not just the preference: `queueTheme` is
+        // always dark, so system materials in here have to be told dark too or they
+        // inherit the app's (possibly light) skin and invert against the dark ink.
+        .environment(\.colorScheme, .dark)
         .preferredColorScheme(.dark)
         .playlistAdding(pending: $addTargets)
     }

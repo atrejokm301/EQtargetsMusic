@@ -36,7 +36,8 @@ struct MiniPlayerBar: View {
     /// Edge rail on the mini chin — a little taller so it doesn’t read as a hairline.
     private static let progressH: CGFloat = 3.5
 
-    private var isDark: Bool { scheme == .dark }
+    /// Follow the resolved skin, not the phone — a forced skin makes `scheme` wrong.
+    private var isDark: Bool { theme.isDark }
 
     private var progress: Double {
         let d = max(player.duration, 0.001)

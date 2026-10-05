@@ -10,7 +10,6 @@ struct NowPlayingView: View {
     @EnvironmentObject private var player: AudioPlayerEngine
     @EnvironmentObject private var presetStore: EQPresetStore
     @Environment(\.grokTheme) private var theme
-    @Environment(\.colorScheme) private var scheme
 
     @State private var showImporter = false
     @State private var showSystemWideInfo = false

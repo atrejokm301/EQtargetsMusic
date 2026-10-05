@@ -122,7 +122,7 @@ struct SelectionActionBar: View {
         // so it reads as secondary chrome rather than a second player.
         .frame(height: 56)
         .frame(maxWidth: .infinity)
-        .glassCapsule(isDark: scheme == .dark)
+        .glassCapsule(isDark: theme.isDark)
         .padding(.horizontal, MiniPlayerBar.horizontalInset)
         .padding(.bottom, 8 + liftAboveMiniPlayer)
         .animation(.easeOut(duration: 0.2), value: liftAboveMiniPlayer)

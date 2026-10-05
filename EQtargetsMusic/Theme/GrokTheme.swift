@@ -4,8 +4,12 @@
 //
 //  Liquid-glass theme aligned with Grok Dev ui-ux-meticulous guidelines:
 //  - 4/8pt spacing
-//  - True black dark mode (NOT navy)
-//  - Creamy light mode
+//  - Four user-pickable surface skins (see AppSurfaceTheme):
+//      Warm  #F7F2EB  cream/paper, forces light
+//      White #F7F7F9  neutral iOS grouped-background, forces light
+//      Black #000000  true black, OLED-friendly, forces dark
+//      Navy  #0B1220  forces dark
+//    plus System, which follows the phone and pairs White ↔ Black.
 //  - Clear hierarchy, AA contrast
 //
 
@@ -79,23 +83,125 @@ enum AppAccentTheme: String, CaseIterable, Identifiable, Codable {
     }
 }
 
-struct GrokTheme {
-    let isDark: Bool
-    var accentTheme: AppAccentTheme = .blue
+/// User-selectable surface skin. Orthogonal to `AppAccentTheme`.
+///
+/// Each case except `.system` FORCES its own appearance — pick Navy and you get
+/// Navy at noon. `.system` follows the phone and pairs White (light) ↔ Black (dark).
+enum AppSurfaceTheme: String, CaseIterable, Identifiable, Codable {
+    case system
+    case warm
+    case white
+    case black
+    case navy
 
-    /// True black / deep charcoal — never navy
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .system: return "System"
+        case .warm: return "Warm"
+        case .white: return "White"
+        case .black: return "Black"
+        case .navy: return "Navy"
+        }
+    }
+
+    /// Root-level override. `nil` = follow the phone.
+    var forcedColorScheme: ColorScheme? {
+        switch self {
+        case .system: return nil
+        case .warm, .white: return .light
+        case .black, .navy: return .dark
+        }
+    }
+
+    /// Chip swatch. Two entries render as a split circle (used by `.system`).
+    var swatchColors: [Color] {
+        switch self {
+        case .system:
+            return [Color(red: 0.969, green: 0.969, blue: 0.976), Color(red: 0.0, green: 0.0, blue: 0.0)]
+        case .warm:
+            return [Color(red: 0.97, green: 0.95, blue: 0.92)]
+        case .white:
+            return [Color(red: 0.969, green: 0.969, blue: 0.976)]
+        case .black:
+            return [Color(red: 0.0, green: 0.0, blue: 0.0)]
+        case .navy:
+            return [Color(red: 0.043, green: 0.071, blue: 0.125)]
+        }
+    }
+
+    /// The dark skin to use where a surface is always-dark regardless of the
+    /// user's pick (e.g. the queue's dark glass). Keeps Navy users on Navy.
+    var darkCounterpart: AppSurfaceTheme {
+        self == .navy ? .navy : .black
+    }
+}
+
+/// Concrete palette a `GrokTheme` resolves to once `.system` is collapsed.
+private enum ResolvedSurface {
+    case warm, white, black, navy
+
+    var isDark: Bool {
+        switch self {
+        case .warm, .white: return false
+        case .black, .navy: return true
+        }
+    }
+}
+
+struct GrokTheme {
+    /// Phone appearance, BEFORE any surface-theme override. Use `isDark` for rendering.
+    private let systemIsDark: Bool
+    var accentTheme: AppAccentTheme = .blue
+    var surfaceTheme: AppSurfaceTheme = .system
+
+    init(isDark: Bool, accentTheme: AppAccentTheme = .blue, surfaceTheme: AppSurfaceTheme = .system) {
+        self.systemIsDark = isDark
+        self.accentTheme = accentTheme
+        self.surfaceTheme = surfaceTheme
+    }
+
+    private var resolved: ResolvedSurface {
+        switch surfaceTheme {
+        case .system: return systemIsDark ? .black : .white
+        case .warm: return .warm
+        case .white: return .white
+        case .black: return .black
+        case .navy: return .navy
+        }
+    }
+
+    /// Resolved appearance — reflects the surface pick, not just the phone switch.
+    var isDark: Bool { resolved.isDark }
+
+    /// Canvas. Light skins are deliberately never pure #FFFFFF: `elevated` /
+    /// `cardFill` are translucent white veils, so a #FFFFFF canvas would flatten
+    /// every card to invisible.
     var background: Color {
-        isDark ? Color(red: 0.0, green: 0.0, blue: 0.0) : Color(red: 0.97, green: 0.95, blue: 0.92)
+        switch resolved {
+        case .warm: return Color(red: 0.97, green: 0.95, blue: 0.92)      // #F7F2EB
+        case .white: return Color(red: 0.969, green: 0.969, blue: 0.976)  // #F7F7F9
+        case .black: return Color(red: 0.0, green: 0.0, blue: 0.0)        // #000000 — OLED
+        case .navy: return Color(red: 0.043, green: 0.071, blue: 0.125)   // #0B1220
+        }
     }
 
     var elevated: Color {
-        // Near-clear in dark so true black bleeds through (avoid grey slabs).
-        isDark ? Color.white.opacity(0.04) : Color.white.opacity(0.72)
+        // Dark skins stay near-clear so the canvas bleeds through (avoid grey slabs).
+        switch resolved {
+        case .warm, .white: return Color.white.opacity(0.72)
+        case .black: return Color.white.opacity(0.04)
+        case .navy: return Color.white.opacity(0.055)  // navy has less contrast headroom than black
+        }
     }
 
     var cardFill: Color {
-        // Very light veil only — black background should remain the dominant surface.
-        isDark ? Color.white.opacity(0.028) : Color.white.opacity(0.55)
+        switch resolved {
+        case .warm, .white: return Color.white.opacity(0.55)
+        case .black: return Color.white.opacity(0.028)
+        case .navy: return Color.white.opacity(0.040)
+        }
     }
 
     var accent: Color {
@@ -106,16 +212,34 @@ struct GrokTheme {
         accentTheme.accentSecondaryColor(isDark: isDark)
     }
 
+    /// ≥15:1 on every skin
     var primaryText: Color {
-        isDark ? Color.white.opacity(0.95) : Color(red: 0.10, green: 0.09, blue: 0.08)
+        switch resolved {
+        case .warm: return Color(red: 0.10, green: 0.09, blue: 0.08)      // warm ink
+        case .white: return Color(red: 0.067, green: 0.067, blue: 0.078)  // 17.7:1
+        case .black: return Color.white.opacity(0.95)
+        case .navy: return Color.white.opacity(0.95)
+        }
     }
 
+    /// AA (≥4.5:1) for body text on every skin
     var secondaryText: Color {
-        isDark ? Color.white.opacity(0.58) : Color(red: 0.38, green: 0.35, blue: 0.32)
+        switch resolved {
+        case .warm: return Color(red: 0.38, green: 0.35, blue: 0.32)
+        case .white: return Color(red: 0.357, green: 0.357, blue: 0.384)  // 6.3:1
+        case .black: return Color.white.opacity(0.58)
+        case .navy: return Color.white.opacity(0.60)  // +2% — navy canvas is lighter than #000
+        }
     }
 
+    /// ~3:1 — non-essential / large text only, on every skin
     var tertiaryText: Color {
-        isDark ? Color.white.opacity(0.38) : Color(red: 0.55, green: 0.50, blue: 0.46)
+        switch resolved {
+        case .warm: return Color(red: 0.55, green: 0.50, blue: 0.46)
+        case .white: return Color(red: 0.545, green: 0.545, blue: 0.576)
+        case .black: return Color.white.opacity(0.38)
+        case .navy: return Color.white.opacity(0.40)
+        }
     }
 
     var targetTint: Color {
@@ -131,24 +255,35 @@ struct GrokTheme {
     }
 
     var separator: Color {
-        isDark ? Color.white.opacity(0.03) : Color.black.opacity(0.03)
+        switch resolved {
+        case .warm: return Color.black.opacity(0.03)
+        case .white: return Color.black.opacity(0.08)
+        case .black: return Color.white.opacity(0.03)
+        case .navy: return Color.white.opacity(0.06)
+        }
     }
 
     var positive: Color {
         isDark ? Color(red: 0.40, green: 0.90, blue: 0.60) : Color(red: 0.12, green: 0.55, blue: 0.35)
     }
 
-    /// Warm glass stroke (mini player / cards) — not pure cool white.
+    /// Glass stroke (mini player / cards). Tinted to match each skin's temperature.
     var glassStrokeTop: Color {
-        isDark
-            ? Color(red: 0.98, green: 0.94, blue: 0.88).opacity(0.12)
-            : Color(red: 1.0, green: 0.99, blue: 0.96).opacity(0.55)
+        switch resolved {
+        case .warm: return Color(red: 1.0, green: 0.99, blue: 0.96).opacity(0.55)
+        case .white: return Color.white.opacity(0.55)
+        case .black: return Color(red: 0.98, green: 0.94, blue: 0.88).opacity(0.12)
+        case .navy: return Color(red: 0.88, green: 0.92, blue: 1.0).opacity(0.14)
+        }
     }
 
     var glassStrokeBottom: Color {
-        isDark
-            ? Color(red: 0.98, green: 0.94, blue: 0.88).opacity(0.03)
-            : Color(red: 0.90, green: 0.84, blue: 0.72).opacity(0.25)
+        switch resolved {
+        case .warm: return Color(red: 0.90, green: 0.84, blue: 0.72).opacity(0.25)
+        case .white: return Color(red: 0.82, green: 0.82, blue: 0.85).opacity(0.25)
+        case .black: return Color(red: 0.98, green: 0.94, blue: 0.88).opacity(0.03)
+        case .navy: return Color(red: 0.88, green: 0.92, blue: 1.0).opacity(0.04)
+        }
     }
 }
 

@@ -52,7 +52,8 @@ struct PlayerProgressScrubber: View {
             && !isCollapseDragging
     }
 
-    private var isDark: Bool { scheme == .dark }
+    /// Follow the resolved skin, not the phone — a forced skin makes `scheme` wrong.
+    private var isDark: Bool { theme.isDark }
 
     // MARK: Palette — matches mini edge rail language
 

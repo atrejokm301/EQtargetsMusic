@@ -32,6 +32,8 @@ struct RootTabView: View {
     @StateObject private var playlistStore = PlaylistStore()
 
     @AppStorage("app_accent_theme") private var accentThemeRaw: String = AppAccentTheme.blue.rawValue
+    /// Surface skin (Warm / White / Black / Navy / System). Orthogonal to accent.
+    @AppStorage("app_surface_theme") private var surfaceThemeRaw: String = AppSurfaceTheme.system.rawValue
     /// Smart BPM Shuffle: library/queue selection only (never touches audio graph).
     @AppStorage(SmartShuffleSelector.enabledDefaultsKey) private var smartBPMShuffleEnabled = false
     @State private var showHamburgerSheet = false
@@ -87,8 +89,70 @@ struct RootTabView: View {
         AppAccentTheme(rawValue: accentThemeRaw) ?? .blue
     }
 
+    private var currentSurfaceTheme: AppSurfaceTheme {
+        AppSurfaceTheme(rawValue: surfaceThemeRaw) ?? .system
+    }
+
     private var theme: GrokTheme {
-        GrokTheme(isDark: scheme == .dark, accentTheme: currentAccentTheme)
+        GrokTheme(
+            isDark: scheme == .dark,
+            accentTheme: currentAccentTheme,
+            surfaceTheme: currentSurfaceTheme
+        )
+    }
+
+    /// Appearance every descendant must agree on, including system materials
+    /// (`.ultraThinMaterial`) which read `\.colorScheme` and know nothing about
+    /// `theme.isDark`. Forced skins make the phone's own scheme the wrong answer.
+    private var enforcedScheme: ColorScheme {
+        theme.isDark ? .dark : .light
+    }
+
+    /// UIKit trait-collection override.
+    ///
+    /// `.preferredColorScheme` and `.environment(\.colorScheme, …)` both stop at the
+    /// SwiftUI layer — neither updates the *hosting controller's* `UITraitCollection`.
+    /// A sheet's background and grabber are drawn by its presentation controller from
+    /// that trait collection, so with a forced skin the sheet chrome rendered in the
+    /// phone's appearance while the sheet's content rendered in the skin's: white ink
+    /// on a near-white sheet, or black ink on a charcoal one.
+    ///
+    /// Setting `overrideUserInterfaceStyle` on the window drives the trait collection
+    /// for the window and every view controller presented inside it, sheets included.
+    private func applyInterfaceStyleOverride() {
+        let windowStyle: UIUserInterfaceStyle
+        switch currentSurfaceTheme.forcedColorScheme {
+        case .light: windowStyle = .light
+        case .dark: windowStyle = .dark
+        default: windowStyle = .unspecified  // .system — hand it back to the phone
+        }
+
+        for scene in UIApplication.shared.connectedScenes {
+            guard let windowScene = scene as? UIWindowScene else { continue }
+
+            // The SCENE's trait is the phone's real appearance. Don't ask
+            // @Environment(\.colorScheme) or the window — both are contaminated by the
+            // override we ourselves set for the previous skin, so right after leaving a
+            // forced skin they still report that skin's appearance.
+            let systemStyle = windowScene.traitCollection.userInterfaceStyle
+            let resolved = windowStyle == .unspecified ? systemStyle : windowStyle
+
+            for window in windowScene.windows {
+                // The window keeps `.unspecified` for System so it tracks the phone
+                // automatically from here on.
+                window.overrideUserInterfaceStyle = windowStyle
+
+                // Presented controllers always get an EXPLICIT style. `.unspecified`
+                // means "inherit", and a sheet already on screen does not re-resolve
+                // inheritance — choosing System from a forced skin left Settings stuck
+                // on the old appearance while the app behind it changed.
+                var controller = window.rootViewController
+                while let presented = controller?.presentedViewController {
+                    presented.overrideUserInterfaceStyle = resolved
+                    controller = presented
+                }
+            }
+        }
     }
 
     private var expansionDistance: CGFloat {
@@ -241,11 +305,20 @@ struct RootTabView: View {
             }
         }
         .environment(\.grokTheme, theme)
+        .environment(\.colorScheme, enforcedScheme)
         .environmentObject(library)
         .environmentObject(player)
         .environmentObject(presetStore)
         .environmentObject(playlistStore)
-        .preferredColorScheme(nil)
+        // Status bar. nil for .system (follow the phone).
+        // In-hierarchy appearance comes from \.colorScheme above; the UIKit trait
+        // collection (sheet chrome) comes from applyInterfaceStyleOverride().
+        .preferredColorScheme(currentSurfaceTheme.forcedColorScheme)
+        .onAppear { applyInterfaceStyleOverride() }
+        .onChange(of: surfaceThemeRaw) { _, _ in applyInterfaceStyleOverride() }
+        // On System, the phone's appearance is the source of truth — re-apply when it
+        // changes, and when it settles after we hand the window back with .unspecified.
+        .onChange(of: scheme) { _, _ in applyInterfaceStyleOverride() }
         .onChange(of: player.currentTrack?.id) { _, _ in
             refreshPlayerArtworkVisuals()
             reconcileWithTrack()
@@ -318,6 +391,7 @@ struct RootTabView: View {
         .sheet(isPresented: $showHamburgerSheet) {
             HamburgerMenuSheet(
                 accentThemeRaw: $accentThemeRaw,
+                surfaceThemeRaw: $surfaceThemeRaw,
                 onOpenCrossfade: {
                     showHamburgerSheet = false
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
@@ -330,6 +404,15 @@ struct RootTabView: View {
             .environmentObject(presetStore)
         .environmentObject(playlistStore)
             .environment(\.grokTheme, theme)
+            .environment(\.colorScheme, enforcedScheme)
+            // Pin the sheet canvas to the skin instead of a system material, so Warm
+            // reads cream rather than neutral grey.
+            //
+            // MUST be the ViewBuilder form. `.presentationBackground(theme.background)`
+            // takes a ShapeStyle by value and captures it at presentation time — switch
+            // skins with the sheet already open and the sheet keeps the OLD canvas while
+            // its content updates. The closure re-evaluates on every theme change.
+            .presentationBackground { theme.background }
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.visible)
         }
@@ -337,6 +420,8 @@ struct RootTabView: View {
             AutoMixSettingsSheet()
                 .environmentObject(player)
                 .environment(\.grokTheme, theme)
+                .environment(\.colorScheme, enforcedScheme)
+                .presentationBackground { theme.background }
         }
         // Global toast — library / queue actions are not only on Now Playing.
         .overlay(alignment: .top) {
@@ -520,6 +605,7 @@ struct RootTabView: View {
 
 struct HamburgerMenuSheet: View {
     @Binding var accentThemeRaw: String
+    @Binding var surfaceThemeRaw: String
     var onOpenCrossfade: () -> Void = {}
 
     @EnvironmentObject private var player: AudioPlayerEngine
@@ -537,6 +623,16 @@ struct HamburgerMenuSheet: View {
 
     private let sleepChoices = AudioPlayerEngine.sleepTimerMinuteChoices
 
+    /// 90 used to render as "1h" — `minutes / 60` is integer division, so it collided
+    /// with the real 60 tile and looked like a duplicate. Show the remainder.
+    private func sleepChoiceLabel(_ minutes: Int) -> String {
+        if minutes == 0 { return "Off" }
+        if minutes < 60 { return "\(minutes)m" }
+        let hours = minutes / 60
+        let remainder = minutes % 60
+        return remainder == 0 ? "\(hours)h" : "\(hours)h \(remainder)m"
+    }
+
     var body: some View {
         NavigationStack {
             ScrollView {
@@ -545,6 +641,7 @@ struct HamburgerMenuSheet: View {
                     sleepTimerCard
                     playbackModesCard
                     djControlsCard
+                    surfaceThemeCard
                     accentThemeCard
                 }
                 .padding(16)
@@ -651,7 +748,7 @@ struct HamburgerMenuSheet: View {
                         UIImpactFeedbackGenerator(style: .light).impactOccurred()
                         player.setSleepTimer(minutes: minutes == 0 ? nil : minutes)
                     } label: {
-                        Text(minutes == 0 ? "Off" : (minutes >= 60 ? "\(minutes / 60)h" : "\(minutes)m"))
+                        Text(sleepChoiceLabel(minutes))
                             .font(.app(size: 13, weight: .bold, design: .rounded))
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 10)
@@ -743,6 +840,54 @@ struct HamburgerMenuSheet: View {
             }
             .buttonStyle(.plain)
             .accessibilityHint("Opens crossfade, silence skip, and Smart BPM settings")
+        }
+        .padding(14)
+        .glassCard(corner: 16)
+    }
+
+    private var surfaceThemeCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            sectionHeader(icon: "circle.lefthalf.filled", title: "Theme")
+
+            LazyVGrid(columns: columns, spacing: 8) {
+                ForEach(AppSurfaceTheme.allCases) { item in
+                    Button {
+                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                        surfaceThemeRaw = item.rawValue
+                    } label: {
+                        HStack(spacing: 6) {
+                            Circle()
+                                .fill(
+                                    LinearGradient(
+                                        colors: item.swatchColors.count == 1
+                                            ? [item.swatchColors[0], item.swatchColors[0]]
+                                            : item.swatchColors,
+                                        startPoint: .leading,
+                                        endPoint: .trailing
+                                    )
+                                )
+                                // Keeps the White and Black swatches visible against
+                                // whichever skin is currently painting the card.
+                                .overlay(Circle().strokeBorder(theme.primaryText.opacity(0.25), lineWidth: 0.8))
+                                .frame(width: 10, height: 10)
+                            Text(item.title)
+                                .font(.app(size: 13, weight: .semibold, design: .rounded))
+                                .lineLimit(1)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 8)
+                        .background(surfaceThemeRaw == item.rawValue ? theme.accent.opacity(0.18) : theme.elevated)
+                        .clipShape(Capsule())
+                        .overlay(
+                            Capsule()
+                                .strokeBorder(surfaceThemeRaw == item.rawValue ? theme.accent : Color.clear, lineWidth: 1.2)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Theme \(item.title)")
+                    .accessibilityAddTraits(surfaceThemeRaw == item.rawValue ? .isSelected : [])
+                }
+            }
         }
         .padding(14)
         .glassCard(corner: 16)
